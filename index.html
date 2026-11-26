@@ -122,7 +122,9 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.75;str
 .obj.sel{outline:1.5px dashed var(--accent);outline-offset:3px}
 .obj.text{white-space:pre;font-family:Helvetica,Arial,sans-serif;line-height:1.2;min-width:8px;min-height:1em}
 .obj.text.editing{outline:1.5px solid var(--accent);cursor:text;user-select:text;-webkit-user-select:text;background:rgba(255,255,255,.7)}
-.obj.text.editing:empty::before{content:"Type here";color:#9AA}
+.obj.text:empty::before{content:"Type here";color:#9AA}
+.obj.text:empty:not(.editing){outline:1.5px dashed var(--accent);outline-offset:3px;background:rgba(255,255,255,.55)}
+.app[data-tool="select"] .obj.text.sel:not(.editing)::after{content:"";position:absolute;inset:-16px}
 .obj.img img{width:100%;height:100%;display:block;pointer-events:none}
 .obj .rz{position:absolute;right:-9px;bottom:-9px;width:18px;height:18px;border-radius:50%;background:var(--accent);border:2px solid #fff;cursor:nwse-resize;touch-action:none}
 .obj.note{width:26px;height:26px}
@@ -278,7 +280,7 @@ img{max-width:100%}
 <input type="file" id="fAdd" accept="application/pdf,.pdf,image/*" multiple hidden>
 <input type="file" id="fImg" accept="image/*" hidden>
 
-<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-51ab90";</script>
+<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-5f0d9d";</script>
 <script src="vendor/pdf.min.js"></script>
 <script src="vendor/pdf-lib.min.js"></script>
 <script src="vendor/jszip.min.js"></script>
@@ -796,8 +798,9 @@ function onPagePointer(e) {
   if (S.editing) finishEdit();
 
   if (S.tool === 'select') {
-    if (!objEl) { if (S.sel) { const old = S.sel; S.sel = null; redrawPage(old.pageId); syncChrome(); } return; }
+    if (!objEl) { if (S.sel) { const old = S.sel; S.sel = null; pruneEmpty(); redrawPage(old.pageId); syncChrome(); } return; }
     const id = objEl.dataset.oid;
+    pruneEmpty(id);
     const wasSel = S.sel && S.sel.id === id;
     if (!wasSel) { const old = S.sel; S.sel = { pageId: p.id, id }; if (old && old.pageId !== p.id) redrawPage(old.pageId); redrawPage(p.id); syncChrome(); }
     if (e.target.dataset.rz || e.target.closest('[data-rz]')) return startResize(e, pv, p, id);
@@ -823,7 +826,7 @@ function tapAction(pv, p, x, y) {
     const o = { type: 'text', id: uid(), ...f, text: '', size: snapF ? snapF.size : S.fontSize, color: S.textColor };
     commit(() => annotsOf(p.id).push(o));
     S.sel = { pageId: p.id, id: o.id }; setTool('select', true);
-    redrawPage(p.id); startEdit(p.id, o.id);
+    redrawPage(p.id); syncChrome();
     return;
   }
   if (S.tool === 'note') {
@@ -1098,8 +1101,8 @@ async function editExisting(pv, p, v, x, y, released) {
       const o = { type: 'text', id: uid(), ...sn.f, text: '', size: Math.min(sn.size, Math.max(8, Math.round(ln.size * 2) / 2)), color: S.textColor };
       commit(() => annotsOf(p.id).push(o));
       S.sel = { pageId: p.id, id: o.id }; setTool('select', true);
-      redrawPage(p.id); startEdit(p.id, o.id);
-      toast('Typing on the line, so it stays. The Text tool does this too.');
+      redrawPage(p.id); syncChrome();
+      toast('Drag the box into place, then tap it to type. The line stays.');
       return;
     }
   }
@@ -1220,7 +1223,7 @@ function startMove(e, pv, p, id, wasSel) {
   const up = () => {
     pv.removeEventListener('pointermove', mv); pv.removeEventListener('pointerup', up); pv.removeEventListener('pointercancel', up);
     if (moved) pushUndo(before);
-    else if (wasSel && o.type === 'text') startEdit(p.id, id);
+    else if ((wasSel || !o.text) && o.type === 'text') startEdit(p.id, id);
   };
   pv.addEventListener('pointermove', mv); pv.addEventListener('pointerup', up); pv.addEventListener('pointercancel', up);
 }
@@ -1391,7 +1394,16 @@ function pickTool(k) {
   setTool(k);
   if (k === 'edit' || k === 'text') redrawAll();
 }
+function pruneEmpty(keepId) {
+  for (const p of S.pages) {
+    const list = S.annots[p.id]; if (!list) continue;
+    const n = list.length;
+    S.annots[p.id] = list.filter(o => !(o.type === 'text' && !o.text && !o.cover && o.id !== keepId && S.editing !== o.id));
+    if (S.annots[p.id].length !== n) redrawPage(p.id);
+  }
+}
 function setTool(k, keepSel) {
+  pruneEmpty(keepSel ? S.sel?.id : null);
   const prev = S.tool, wasEdit = prev === 'edit' || prev === 'text';
   S.tool = k; if (k !== 'place') S.pending = null;
   if (wasEdit && k !== prev) pagesEl.querySelectorAll('.edhint').forEach(r => r.remove());
@@ -1427,6 +1439,7 @@ function syncChrome() {
     if (o.type === 'hl') pr.append(...swatches(HL, o.color, c => { S.hlColor = c; applySel(x => x.color = c); }));
     if (o.type === 'ink') pr.append(...swatches(INK, o.color, c => { S.inkColor = c; applySel(x => x.color = c); }));
     if (o.type === 'text') {
+      if (!o.text && S.editing !== o.id) pr.append(h('button', { class: 'chip on', onclick: () => startEdit(S.sel.pageId, o.id) }, 'Type'), h('span', { class: 'hint' }, 'Drag the box into place, then tap it to type'));
       pr.append(...swatches(INK, o.color, c => { S.textColor = c; applySel(x => x.color = c); }));
       pr.append(sizeSelect(o.size, s => { S.fontSize = s; applySel(x => x.size = s); }));
       const fs = h('select', { class: 'chip', 'aria-label': 'Font' }, h('option', { value: 'sans' }, 'Sans'), h('option', { value: 'serif' }, 'Serif'), h('option', { value: 'mono' }, 'Mono'));
