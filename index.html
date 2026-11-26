@@ -278,7 +278,7 @@ img{max-width:100%}
 <input type="file" id="fAdd" accept="application/pdf,.pdf,image/*" multiple hidden>
 <input type="file" id="fImg" accept="image/*" hidden>
 
-<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-24062d";</script>
+<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-51ab90";</script>
 <script src="vendor/pdf.min.js"></script>
 <script src="vendor/pdf-lib.min.js"></script>
 <script src="vendor/jszip.min.js"></script>
@@ -686,7 +686,7 @@ function drawOverlay(pv, p) {
       const s1 = S.scale, rh = Math.min(b.room, 26);
       svg.append(svgEl('rect', { x: b.x0 * s1, y: (b.y - rh) * s1, width: (b.x1 - b.x0) * s1, height: rh * s1, class: 'edhint', fill: 'var(--accent)', 'fill-opacity': .07 }));
     }
-    else blanksOf(p).then(() => { if (S.tool === 'text') redrawPage(p.id); });
+    else Promise.all([blanksOf(p), linesOf(p)]).then(() => { if (S.tool === 'text') redrawPage(p.id); });
   }
   // in Edit text mode, outline the lines that can be changed
   if (S.tool === 'edit') {
@@ -968,8 +968,11 @@ function snapToLine(p, v, x, y) {
     if (!best || b.y < best.y) best = b; // nearest line under the finger
   }
   if (!best) return null;
-  const size = Math.max(6, Math.min(S.fontSize, (Math.min(best.room, 40) - 2) * 0.72));
-  const sx = (X - best.x0) > 0.35 * (best.x1 - best.x0) ? X : best.x0 + 3;
+  let size = Math.max(6, Math.min(S.fontSize, (Math.min(best.room, 40) - 2) * 0.72));
+  // match the printed labels on the same row, so filled-in text looks like it belongs
+  const near = (linesCache.get(lineKey(p)) || []).filter(l => { const [, ly] = v.convertToViewportPoint(l.x, l.y); return Math.abs(ly / S.scale - best.y) < 10 && l.size > 5; });
+  if (near.length) size = Math.max(6, Math.min(size, Math.max(...near.map(l => l.size)) + 1));
+  const sx = (X - best.x0) > 0.5 * (best.x1 - best.x0) ? X : best.x0 + 3;
   const baseline = best.y - Math.max(1.5, size * 0.22);
   const top = baseline - 0.947 * size;
   return { f: frameAt(v, sx * S.scale, top * S.scale), size: Math.round(size * 2) / 2 };
@@ -1087,6 +1090,19 @@ async function editExisting(pv, p, v, x, y, released) {
   if (existing) { S.sel = { pageId: p.id, id: existing.id }; setTool('select', true); redrawPage(p.id); startEdit(p.id, existing.id); return; }
   const ln = lines.find(l => ux >= l.x - 3 && ux <= l.x + l.w + 3 && uy >= l.y - l.size * 0.35 && uy <= l.y + l.size * 1.05);
   if (!ln) { toast(lines.length ? 'Tap directly on a line of text (they\u2019re outlined).' : 'This page has no text Folio can read. If it\u2019s a scan or photo, run Scan text first.'); return; }
+  // a fill-in blank (____ or ....): type on it instead of covering it
+  if (/[_.\u2026]{4,}/.test(ln.str)) {
+    await blanksOf(p);
+    const sn = snapToLine(p, v, x, Math.min(y, v.convertToViewportPoint(ux, ln.y + ln.size * 0.3)[1]));
+    if (sn) {
+      const o = { type: 'text', id: uid(), ...sn.f, text: '', size: Math.min(sn.size, Math.max(8, Math.round(ln.size * 2) / 2)), color: S.textColor };
+      commit(() => annotsOf(p.id).push(o));
+      S.sel = { pageId: p.id, id: o.id }; setTool('select', true);
+      redrawPage(p.id); startEdit(p.id, o.id);
+      toast('Typing on the line, so it stays. The Text tool does this too.');
+      return;
+    }
+  }
   const { fg, bg } = sampleColors(pv, p, ln);
   const o = { type: 'text', id: uid(), P: [ln.x, ln.y + 0.947 * ln.size * 0.98], u: [1, 0], d: [0, -1], text: ln.str, size: Math.round(ln.size * 10) / 10, color: fg, font: ln.font, bold: ln.bold,
     cover: [ln.x - 1, ln.y - ln.size * 0.28, ln.w + 2, ln.size * 1.22], coverColor: bg };
