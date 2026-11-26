@@ -147,6 +147,8 @@ select.fld{color-scheme:light}
 .empty .card{max-width:420px;text-align:center;display:flex;flex-direction:column;gap:12px;align-items:center}
 .empty h2{margin:0;font-size:20px;font-weight:600;text-wrap:balance}
 .empty p{margin:0;color:var(--muted)}
+.start-recent{width:min(420px,100%);display:flex;flex-direction:column;gap:6px;text-align:left}
+.start-recent:empty{display:none}
 .dropping .viewer::after{content:"Drop to add";position:absolute;inset:12px;border:2px dashed var(--accent);border-radius:12px;display:grid;place-items:center;font-weight:600;color:var(--accent);background:color-mix(in srgb,var(--desk) 80%,transparent);pointer-events:none}
 
 .menu{position:absolute;right:0;top:42px;background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 30px var(--shadow);padding:6px;min-width:230px;z-index:30;display:flex;flex-direction:column}
@@ -284,7 +286,7 @@ img{max-width:100%}
 <input type="file" id="fAdd" accept="application/pdf,.pdf,image/*" multiple hidden>
 <input type="file" id="fImg" accept="image/*" hidden>
 
-<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-d75c2b";</script>
+<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-227ae9";</script>
 <script src="vendor/pdf.min.js"></script>
 <script src="vendor/pdf-lib.min.js"></script>
 <script src="vendor/jszip.min.js"></script>
@@ -578,11 +580,20 @@ function rebuild() {
   pagesEl.querySelectorAll('.pv').forEach(pv => { const c = pv.querySelector('.pc'); if (c && c.width) oldPc.set(pv.dataset.id, c); });
   pagesEl.textContent = '';
   if (!S.pages.length) {
+    const rec = h('div', { class: 'recent start-recent' });
     pagesEl.append(h('div', { class: 'empty' }, h('div', { class: 'card' },
       h('h2', {}, 'Open a PDF or a photo'),
       h('p', {}, 'Files stay on this device. Nothing is uploaded.'),
       h('button', { class: 'btn primary', onclick: () => $('#fOpen').click() }, 'Choose file'),
-      h('button', { class: 'btn ghost', onclick: () => openOpenModal() }, 'Recent files'))));
+      rec,
+      h('button', { class: 'btn ghost', onclick: () => loadSample() }, 'Try the sample form'))));
+    recentList().then(list => {
+      if (!list.length) return;
+      rec.append(h('div', { class: 'lbl', style: 'text-align:left' }, 'Recent'), ...list.map(r => h('div', { class: 'rrow' },
+        h('button', { class: 'ropen', onclick: () => openRecent(r.id) },
+          r.thumb ? h('img', { src: r.thumb, alt: '' }) : h('span', { class: 'noth' }),
+          h('span', { class: 'rtxt' }, h('b', {}, r.name + '.pdf'), h('small', {}, `${r.pages} page${r.pages === 1 ? '' : 's'} · ${ago(r.updated)}`))))));
+    }).catch(() => {});
   }
   S.pages.forEach((p, i) => {
     const v = vp(p);
@@ -1446,7 +1457,7 @@ const INK = ['#111111', '#1D3A8A', '#C62828', '#0B6E5B'];
 function swatches(list, cur, onPick) { return list.map(c => h('button', { class: 'sw' + (c.toLowerCase() === cur.toLowerCase() ? ' on' : ''), style: `background:${c}`, 'aria-label': `Colour ${c}`, onclick: () => onPick(c) })); }
 function syncChrome() {
   buildDock(); syncUndo();
-  $('#fname').textContent = S.isSample ? 'Sample form (try anything here)' : S.name + '.pdf';
+  $('#fname').textContent = !S.pages.length ? '' : S.isSample ? 'Sample form (try anything here)' : S.name + '.pdf';
   $('#bFit').textContent = Math.round(S.scale * 100) + '%';
   const pr = $('#props'); pr.textContent = '';
   if (searchOpen) {
@@ -1498,7 +1509,7 @@ function syncChrome() {
   } else if (S.tool === 'place') {
     pr.append(h('span', { class: 'hint' }, S.pending?.kind === 'sign' ? 'Tap where your signature should go' : S.pending?.kind === 'stamp' ? 'Tap where the stamp should go' : 'Tap where the image should go'), h('button', { class: 'chip', onclick: () => setTool('select') }, 'Cancel'));
   } else {
-    pr.append(h('span', { class: 'hint' }, S.isSample
+    pr.append(h('span', { class: 'hint' }, !S.pages.length ? 'Open a file to get started.' : S.isSample
       ? 'This is a sample form. Type into the fields, or pick a tool on the left. Open your own file when you’re ready.'
       : 'Tap an item to select it, or pick a tool to mark up the page.'));
   }
@@ -2151,7 +2162,16 @@ let rzT, wasWide = innerWidth > 760; addEventListener('resize', () => { clearTim
     history.replaceState(null, '', location.pathname);
   }
   if (shared.length) { rebuild(); await openFiles(shared, false); }
-  else try {
+  if (!shared.length) rebuild(); // start screen with recent files
+  // installed app: files opened with "Open with Folio" arrive here
+  if ('launchQueue' in window) window.launchQueue.setConsumer(async lp => {
+    if (!lp.files || !lp.files.length) return;
+    try { openFiles(await Promise.all(lp.files.map(f => f.getFile())), false); } catch (e) { console.error(e); }
+  });
+})();
+async function loadSample() {
+  try {
+    S.isSample = true; S.docId = null;
     const bytes = await makeSample();
     const si = await loadSource(bytes, 'sample-form.pdf');
     S.sources[si].pageObjs.forEach((_, i) => S.pages.push({ id: uid(), src: si, idx: i, rot: 0 }));
@@ -2159,13 +2179,8 @@ let rzT, wasWide = innerWidth > 760; addEventListener('resize', () => { clearTim
     const p2 = S.pages[1];
     if (p2) S.annots[p2.id] = [{ type: 'hl', id: uid(), x: 54, y: 602, w: 118, h: 16, color: '#FFE14D' }];
   } catch (e) { console.error(e); }
-  if (!shared.length) rebuild();
-  // installed app: files opened with "Open with Folio" arrive here
-  if ('launchQueue' in window) window.launchQueue.setConsumer(async lp => {
-    if (!lp.files || !lp.files.length) return;
-    try { openFiles(await Promise.all(lp.files.map(f => f.getFile())), false); } catch (e) { console.error(e); }
-  });
-})();
+  S.fit = true; rebuild();
+}
 if (location.search.includes('debug')) window.__f = { S, blankCache, blankKey, pickTool, finishEdit, findBlankLines };
 })();
 </script>
