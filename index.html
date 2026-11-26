@@ -94,6 +94,7 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.75;str
 .th .ck svg{width:14px;height:14px;stroke-width:2.5}
 .th .acts{display:flex;gap:0;opacity:0;transition:opacity .12s}
 .th:hover .acts,.th:focus-within .acts,.th.cur .acts{opacity:1}
+@media (hover:none){.th .acts{opacity:1}.th .acts .btn{width:34px;height:34px}}
 .th .acts .btn{width:28px;height:28px}
 .th .acts svg{width:16px;height:16px}
 
@@ -1749,12 +1750,29 @@ document.addEventListener('dragenter', e => { if ([...e.dataTransfer.types].incl
 document.addEventListener('dragleave', e => { if ([...e.dataTransfer.types].includes('Files') && --dragDepth <= 0) { dragDepth = 0; $('#app').classList.remove('dropping'); } });
 document.addEventListener('dragover', e => { if ([...e.dataTransfer.types].includes('Files')) e.preventDefault(); });
 document.addEventListener('drop', e => { if (!e.dataTransfer.files.length) return; e.preventDefault(); dragDepth = 0; $('#app').classList.remove('dropping'); openFiles(e.dataTransfer.files, S.pages.length > 0); });
-let rzT; addEventListener('resize', () => { clearTimeout(rzT); rzT = setTimeout(() => { if (S.fit) { const s = fitScale(); if (Math.abs(s - S.scale) > 0.01) rebuild(); } }, 150); });
+let rzT, wasWide = innerWidth > 760; addEventListener('resize', () => { clearTimeout(rzT); rzT = setTimeout(() => {
+  // folding a phone: close the page drawer on the small screen, bring it back on the big one
+  const wide = innerWidth > 760; if (wide !== wasWide) { wasWide = wide; $('#work').classList.toggle('nopanel', !wide); if (wide) buildThumbs(); } if (S.fit) { const s = fitScale(); if (Math.abs(s - S.scale) > 0.01) rebuild(); } }, 150); });
 
 (async () => {
   if (innerWidth <= 760) $('#work').classList.add('nopanel');
   syncChrome();
-  try {
+  // files shared to Folio from another app (Android Share menu) are parked by the service worker
+  let shared = [];
+  if (window.FOLIO_SITE && /[?&]shared=/.test(location.search) && 'caches' in window) {
+    try {
+      const c = await caches.open('folio-share');
+      for (const req of await c.keys()) {
+        const res = await c.match(req), blob = await res.blob();
+        const name = decodeURIComponent(res.headers.get('X-Name') || 'shared.pdf');
+        shared.push(new File([blob], name, { type: blob.type || res.headers.get('Content-Type') || '' }));
+        await c.delete(req);
+      }
+    } catch (e) { console.error(e); }
+    history.replaceState(null, '', location.pathname);
+  }
+  if (shared.length) { rebuild(); await openFiles(shared, false); }
+  else try {
     const bytes = await makeSample();
     const si = await loadSource(bytes, 'sample-form.pdf');
     S.sources[si].pageObjs.forEach((_, i) => S.pages.push({ id: uid(), src: si, idx: i, rot: 0 }));
@@ -1762,7 +1780,7 @@ let rzT; addEventListener('resize', () => { clearTimeout(rzT); rzT = setTimeout(
     const p2 = S.pages[1];
     if (p2) S.annots[p2.id] = [{ type: 'hl', id: uid(), x: 54, y: 602, w: 118, h: 16, color: '#FFE14D' }];
   } catch (e) { console.error(e); }
-  rebuild();
+  if (!shared.length) rebuild();
   // installed app: files opened with "Open with Folio" arrive here
   if ('launchQueue' in window) window.launchQueue.setConsumer(async lp => {
     if (!lp.files || !lp.files.length) return;
