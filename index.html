@@ -280,7 +280,7 @@ img{max-width:100%}
 <input type="file" id="fAdd" accept="application/pdf,.pdf,image/*" multiple hidden>
 <input type="file" id="fImg" accept="image/*" hidden>
 
-<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-5f0d9d";</script>
+<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-b02d28";</script>
 <script src="vendor/pdf.min.js"></script>
 <script src="vendor/pdf-lib.min.js"></script>
 <script src="vendor/jszip.min.js"></script>
@@ -1262,8 +1262,8 @@ function finishEdit() {
   if (o && e) {
     const t = e.innerText.replace(/ /g, ' ').replace(/\n$/, '');
     const prev = JSON.parse(editBefore || '{}');
-    if (!t.trim() && !o.cover) { S.annots[pageId] = annotsOf(pageId).filter(x => x.id !== id); S.sel = null; }
-    else if (!t.trim()) o.text = '';
+    // an empty box stays (e.g. while picking a size); it is tidied away once you leave it
+    if (!t.trim()) o.text = '';
     else o.text = t;
     if (editBefore && snap() !== editBefore) {
       // undo should skip the empty "just created" state when the text box was new
