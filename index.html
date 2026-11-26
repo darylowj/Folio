@@ -107,6 +107,7 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.75;str
 .app[data-tool="select"] .pv svg.mk .hitable{pointer-events:visiblePainted;cursor:move}
 .app:not([data-tool="select"]) .pv{touch-action:none;cursor:crosshair}
 .app[data-tool="text"] .pv{cursor:text}
+.app[data-tool="wmmove"] .pv{cursor:move}
 .app:not([data-tool="select"]) .fl{pointer-events:none}
 .ol{pointer-events:none}
 .obj{position:absolute;transform-origin:0 0;pointer-events:auto}
@@ -595,7 +596,8 @@ function redrawForms() { pagesEl.querySelectorAll('.pv').forEach(pv => { const p
 
 /* ---------- watermark ---------- */
 function wmCenters(W, H, bw, bh, wm) {
-  if (!wm.tiled) return [[W / 2, H / 2]];
+  const cx = W / 2 + (wm.ox || 0) * W, cy = H / 2 + (wm.oy || 0) * H;
+  if (!wm.tiled) return [[cx, cy]];
   const stepX = bw + Math.max(50, wm.size * 2.5), stepY = bh + wm.size * 3;
   const a = wm.angle * Math.PI / 180, R = Math.hypot(W, H), out = [];
   const nj = Math.ceil(R / stepY), ni = Math.ceil(R / stepX) + 1;
@@ -603,7 +605,7 @@ function wmCenters(W, H, bw, bh, wm) {
     const off = (Math.abs(j) % 2) * stepX / 2;
     for (let i = -ni; i <= ni; i++) {
       const lx = i * stepX + off, ly = j * stepY;
-      const x = W / 2 + lx * Math.cos(a) - ly * Math.sin(a), y = H / 2 + lx * Math.sin(a) + ly * Math.cos(a);
+      const x = cx + lx * Math.cos(a) - ly * Math.sin(a), y = cy + lx * Math.sin(a) + ly * Math.cos(a);
       if (x > -bw && x < W + bw && y > -bw && y < H + bw) out.push([x, y]);
     }
   }
@@ -665,6 +667,7 @@ function onPagePointer(e) {
     S.sel = { pageId: p.id, id: o.id }; setTool('select', true); redrawPage(p.id); syncChrome();
     return;
   }
+  if (S.tool === 'wmmove') return startWmMove(e, pv, v);
   if (S.tool === 'place' && S.pending) {
     const { ref, w, hgt } = S.pending;
     const f = frameAt(v, x - w * S.scale / 2, y - hgt * S.scale / 2);
@@ -705,6 +708,25 @@ function startStroke(e, pv, p, v, x0, y0) {
       commit(() => annotsOf(p.id).push(o));
     }
     redrawPage(p.id);
+  };
+  pv.addEventListener('pointermove', mv); pv.addEventListener('pointerup', up); pv.addEventListener('pointercancel', up);
+}
+function startWmMove(e, pv, v) {
+  if (!S.wm) return setTool('select');
+  pv.setPointerCapture(e.pointerId);
+  const before = snap(), sx = e.clientX, sy = e.clientY, ox = S.wm.ox || 0, oy = S.wm.oy || 0;
+  let moved = false, raf = 0;
+  const mv = ev => {
+    const dx = ev.clientX - sx, dy = ev.clientY - sy;
+    if (!moved && Math.hypot(dx, dy) < 3) return;
+    moved = true;
+    S.wm.ox = Math.max(-0.5, Math.min(0.5, ox + dx / v.width));
+    S.wm.oy = Math.max(-0.5, Math.min(0.5, oy + dy / v.height));
+    if (!raf) raf = requestAnimationFrame(() => { raf = 0; redrawWm(); });
+  };
+  const up = () => {
+    pv.removeEventListener('pointermove', mv); pv.removeEventListener('pointerup', up); pv.removeEventListener('pointercancel', up);
+    if (moved) { pushUndo(before); redrawWm(); }
   };
   pv.addEventListener('pointermove', mv); pv.addEventListener('pointerup', up); pv.addEventListener('pointercancel', up);
 }
@@ -886,7 +908,7 @@ const TOOLS = [
 function buildDock() {
   const d = $('#dock'); d.textContent = '';
   for (const [k, label] of TOOLS) {
-    const on = S.tool === k || (k === 'sign' && S.tool === 'place' && S.pending?.kind === 'sign') || (k === 'image' && S.tool === 'place' && S.pending?.kind === 'image') || (k === 'wm' && S.wm);
+    const on = S.tool === k || (k === 'sign' && S.tool === 'place' && S.pending?.kind === 'sign') || (k === 'image' && S.tool === 'place' && S.pending?.kind === 'image') || (k === 'wm' && (S.wm || S.tool === 'wmmove'));
     d.append(h('button', { class: 'tool' + (on ? ' on' : ''), 'aria-pressed': String(!!on), title: label, html: icon(k) + `<span>${label}</span>`, onclick: () => pickTool(k) }));
   }
 }
@@ -945,6 +967,12 @@ function syncChrome() {
     pr.append(lbl('Text'), ...swatches(INK, S.textColor, c => { S.textColor = c; syncChrome(); }), sizeSelect(S.fontSize, s => { S.fontSize = s; syncChrome(); }), h('span', { class: 'hint' }, 'Tap where the text should go'));
   } else if (S.tool === 'note') {
     pr.append(h('span', { class: 'hint' }, 'Tap the page to pin a comment. It shows up as a note in Acrobat and Preview too.'));
+  } else if (S.tool === 'wmmove') {
+    pr.append(lbl('Watermark'), h('span', { class: 'hint' }, 'Drag on the page to move the watermark'),
+      h('button', { class: 'chip', onclick: () => { if (!S.wm) return; commit(() => { S.wm.ox = 0; S.wm.oy = 0; }); redrawWm(); } }, 'Centre it'),
+      h('button', { class: 'chip', 'aria-label': 'Make watermark smaller', onclick: () => { if (!S.wm) return; commit(() => { S.wm.size = Math.max(8, Math.round(S.wm.size / 1.15)); }); redrawWm(); } }, 'A−'),
+      h('button', { class: 'chip', 'aria-label': 'Make watermark bigger', onclick: () => { if (!S.wm) return; commit(() => { S.wm.size = Math.min(120, Math.round(S.wm.size * 1.15)); }); redrawWm(); } }, 'A+'),
+      h('button', { class: 'chip on', onclick: () => setTool('select') }, 'Done'));
   } else if (S.tool === 'place') {
     pr.append(h('span', { class: 'hint' }, S.pending?.kind === 'sign' ? 'Tap where your signature should go' : 'Tap where the image should go'), h('button', { class: 'chip', onclick: () => setTool('select') }, 'Cancel'));
   } else {
@@ -1074,7 +1102,7 @@ function openWmModal() {
   const size = h('input', { type: 'range', min: 10, max: 60, value: wm.size, 'aria-label': 'Text size' });
   const op = h('input', { type: 'range', min: 10, max: 80, value: Math.round(wm.opacity * 100), 'aria-label': 'Opacity' });
   const ang = h('select', {}, ...[[-45, 'Diagonal, steep'], [-30, 'Diagonal'], [0, 'Straight across']].map(([v, l]) => h('option', { value: v }, l))); ang.value = wm.angle;
-  const lay = h('select', {}, h('option', { value: '1' }, 'Repeat across the page'), h('option', { value: '0' }, 'Once, in the middle')); lay.value = wm.tiled ? '1' : '0';
+  const lay = h('select', {}, h('option', { value: '1' }, 'Repeat across the page'), h('option', { value: '0' }, 'Once (you can drag it)')); lay.value = wm.tiled ? '1' : '0';
   const flat = h('input', { type: 'checkbox', id: 'wmFlat', checked: wm.flatten });
   const colorRow = h('div', { class: 'row', style: 'gap:8px;align-items:center' });
   const sync = () => {
@@ -1098,6 +1126,7 @@ function openWmModal() {
   const close = modal('Watermark', body, c => [
     prevWm || S.wm ? h('button', { class: 'btn danger', onclick: () => { done = true; if (prevWm) pushUndo(before); S.wm = null; redrawWm(); syncChrome(); c(); } }, 'Remove') : null,
     h('button', { class: 'btn ghost', onclick: () => { c(); } }, 'Cancel'),
+    h('button', { class: 'btn ghost', onclick: () => { done = true; pushUndo(before); sync(); c(); setTool('wmmove'); } }, 'Apply and move'),
     h('button', { class: 'btn primary', onclick: () => { done = true; pushUndo(before); sync(); syncChrome(); c(); toast('Watermark added to every page. Use Save to export it.'); } }, 'Apply'),
   ].filter(Boolean));
   // revert preview if closed without applying
