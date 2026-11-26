@@ -115,7 +115,8 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.75;str
 .ol{pointer-events:none}
 .obj{position:absolute;transform-origin:0 0;pointer-events:auto}
 .app:not([data-tool="select"]) .obj:not(.editing){pointer-events:none}
-.app[data-tool="select"] .obj{cursor:move}
+.app[data-tool="select"] .obj{cursor:move;touch-action:none}
+.app[data-tool="select"] .pv svg.mk .hitable{touch-action:none}
 .obj.sel{outline:1.5px dashed var(--accent);outline-offset:3px}
 .obj.text{white-space:pre;font-family:Helvetica,Arial,sans-serif;line-height:1.2;min-width:8px;min-height:1em}
 .obj.text.editing{outline:1.5px solid var(--accent);cursor:text;user-select:text;-webkit-user-select:text;background:rgba(255,255,255,.7)}
@@ -145,6 +146,8 @@ select.fld{color-scheme:light}
 .menu button{text-align:left;padding:9px 10px;border-radius:6px;border:0;background:none;display:flex;flex-direction:column;gap:1px}
 .menu button:hover{background:var(--surface-2)}
 .menu small{color:var(--muted);font-size:12px}
+.menu .ver{font-family:var(--mono);font-size:11px;color:var(--muted);padding:6px 10px 2px;border-top:1px solid var(--line);margin-top:4px}
+.menu .ver:empty{display:none}
 
 .scrim{position:fixed;inset:0;background:rgba(10,18,16,.45);display:grid;place-items:center;z-index:50;padding:16px}
 .modal{background:var(--surface);border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.35);width:min(520px,100%);max-height:calc(100% - 32px);overflow:auto;display:flex;flex-direction:column}
@@ -243,6 +246,7 @@ img{max-width:100%}
         <button id="mPdf">Save as PDF<small>All pages with your changes</small></button>
         <button id="mJpg">Save this page as JPG<small>Handy for sending an IC copy</small></button>
         <button id="mAdd" class="only-m">Add files<small>Merge more PDFs or photos</small></button>
+        <div class="ver" id="ver"></div>
       </div>
     </div>
   </div>
@@ -261,7 +265,7 @@ img{max-width:100%}
 <input type="file" id="fAdd" accept="application/pdf,.pdf,image/*" multiple hidden>
 <input type="file" id="fImg" accept="image/*" hidden>
 
-<script>window.FOLIO_SITE = true;</script>
+<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-160931";</script>
 <script src="vendor/pdf.min.js"></script>
 <script src="vendor/pdf-lib.min.js"></script>
 <script src="vendor/jszip.min.js"></script>
@@ -1086,7 +1090,7 @@ function buildDock() {
 }
 function pickTool(k) {
   if (S.editing) finishEdit();
-  if (k === 'sign') return libLoad().length ? openLibrary() : openSignModal();
+  if (k === 'sign') return openLibrary();
   if (k === 'image') return $('#fImg').click();
   if (k === 'wm') return openWmModal();
   if (k === 'ocr') return openOcrModal();
@@ -1226,6 +1230,7 @@ function openLibrary() {
   const wrap = h('div', { class: 'field' });
   const importIn = h('input', { type: 'file', accept: 'application/json,.json', hidden: true });
   const stampIn = h('input', { type: 'file', accept: 'image/*', hidden: true });
+  const camIn = h('input', { type: 'file', accept: 'image/*', capture: 'environment', hidden: true });
   function card(it) {
     const del = h('button', { class: 'btn icon danger', title: 'Delete', 'aria-label': `Delete ${it.name}`, html: icon('trash') });
     del.addEventListener('click', () => {
@@ -1246,11 +1251,12 @@ function openLibrary() {
     wrap.append(
       h('div', { class: 'libh' }, h('span', { class: 'lbl' }, 'Signatures'), h('button', { class: 'chip', onclick: () => { close(); openSignModal(); } }, '+ New signature')),
       sigs.length ? h('div', { class: 'lib' }, sigs.map(card)) : h('p', { class: 'note-s', style: 'margin:0' }, 'No saved signatures yet.'),
-      h('div', { class: 'libh' }, h('span', { class: 'lbl' }, 'Stamps'), h('button', { class: 'chip', onclick: () => stampIn.click() }, '+ Add stamp from photo')),
+      h('div', { class: 'libh' }, h('span', { class: 'lbl' }, 'Stamps')),
+      h('div', { class: 'row', style: 'gap:6px' }, h('button', { class: 'chip', onclick: () => camIn.click() }, '+ Take photo of stamp'), h('button', { class: 'chip', onclick: () => stampIn.click() }, '+ Choose from gallery')),
       stamps.length ? h('div', { class: 'lib' }, stamps.map(card)) : h('p', { class: 'note-s', style: 'margin:0' }, 'Add a photo of your company stamp. Folio removes the paper behind it so it sits cleanly on the page.'),
     );
   }
-  stampIn.addEventListener('change', () => { const f = stampIn.files[0]; stampIn.value = ''; if (f) { close(); openStampModal(f); } });
+  for (const inp of [stampIn, camIn]) inp.addEventListener('change', () => { const f = inp.files[0]; inp.value = ''; if (f) { close(); openStampModal(f); } });
   importIn.addEventListener('change', async () => {
     const f = importIn.files[0]; importIn.value = ''; if (!f) return;
     try {
@@ -1262,7 +1268,7 @@ function openLibrary() {
     } catch { toast('That file isn’t a Folio library backup.'); }
   });
   render();
-  const body = [wrap, importIn, stampIn,
+  const body = [wrap, importIn, stampIn, camIn,
     h('div', { class: 'libfoot' },
       h('span', { class: 'note-s' }, 'Saved only on this device. To use them on your phone and computer, back up here and restore on the other device.'),
       h('div', { class: 'row', style: 'gap:6px' },
@@ -1721,6 +1727,7 @@ $('#fImg').onchange = async e => {
     addImage(c.toDataURL('image/png'), c.width, c.height, 'image', 180);
   } catch { toast('Couldn’t read that image.'); } finally { URL.revokeObjectURL(url); }
 };
+if (window.FOLIO_VERSION) $('#ver').textContent = 'Folio version ' + window.FOLIO_VERSION;
 $('#bUndo').onclick = undo; $('#bRedo').onclick = redo;
 $('#bFind').onclick = () => toggleSearch();
 $('#bPanel').onclick = () => togglePanel();

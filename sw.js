@@ -1,5 +1,5 @@
 // Folio service worker: keeps the app working offline. Your PDFs are never sent anywhere; files shared from another app are held here only until Folio opens them.
-const CACHE = 'folio-e64cfc2f30';
+const CACHE = 'folio-d99b3b6a75';
 const CORE = ['./', './index.html', './manifest.webmanifest',
   './vendor/pdf.min.js', './vendor/pdf.worker.min.js', './vendor/pdf-lib.min.js', './vendor/jszip.min.js',
   './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png', './icons/apple-touch-icon.png', './icons/favicon.png'];
@@ -25,6 +25,12 @@ self.addEventListener('fetch', e => {
   }
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
+  // the app page itself: always try the network first so updates arrive on the next launch
+  if (req.mode === 'navigate' && url.origin === location.origin) {
+    e.respondWith(fetch(req).then(res => { if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put('./', copy)); } return res; })
+      .catch(async () => (await caches.match('./')) || caches.match('./index.html')));
+    return;
+  }
   if (url.origin === location.origin) {
     // app shell: cache first, refresh in the background
     e.respondWith(caches.match(req, { ignoreSearch: true }).then(hit => {
