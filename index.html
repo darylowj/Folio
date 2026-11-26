@@ -179,6 +179,14 @@ select.fld{color-scheme:light}
 .item .iname:focus{background:var(--surface-2)}
 .item .warn{flex:1;font-size:12px;color:var(--danger)}
 .item .meta .btn{width:30px;height:30px}
+.recent{display:flex;flex-direction:column;gap:6px}
+.rrow{display:flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:10px;padding:6px;background:var(--surface)}
+.rrow.cur{border-color:var(--accent)}
+.ropen{flex:1;min-width:0;display:flex;align-items:center;gap:12px;border:0;background:none;text-align:left;padding:0;border-radius:6px}
+.ropen img,.ropen .noth{width:44px;height:56px;object-fit:cover;object-position:top;border:1px solid var(--line);border-radius:4px;background:#fff;flex:none}
+.rtxt{display:flex;flex-direction:column;min-width:0}
+.rtxt b{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rtxt small{color:var(--muted);font-size:12px}
 .libfoot{display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--line);padding-top:10px}
 .stampprev{display:block;max-width:100%;max-height:220px;margin:0 auto;border-radius:8px;border:1px solid var(--line);background-color:#fff;background-image:linear-gradient(45deg,#e6e9e8 25%,transparent 25%,transparent 75%,#e6e9e8 75%),linear-gradient(45deg,#e6e9e8 25%,transparent 25%,transparent 75%,#e6e9e8 75%);background-size:16px 16px;background-position:0 0,8px 8px}
 .saved{display:flex;gap:8px;flex-wrap:wrap}
@@ -268,7 +276,7 @@ img{max-width:100%}
 <input type="file" id="fAdd" accept="application/pdf,.pdf,image/*" multiple hidden>
 <input type="file" id="fImg" accept="image/*" hidden>
 
-<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-128a2e";</script>
+<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-1f619b";</script>
 <script src="vendor/pdf.min.js"></script>
 <script src="vendor/pdf-lib.min.js"></script>
 <script src="vendor/jszip.min.js"></script>
@@ -347,11 +355,11 @@ const S = {
 };
 let undoStack = [], redoStack = [];
 const snap = () => JSON.stringify({ pages: S.pages, annots: S.annots, form: S.form, wm: S.wm });
-function pushUndo(s = snap()) { undoStack.push(s); if (undoStack.length > 150) undoStack.shift(); redoStack = []; syncUndo(); }
+function pushUndo(s = snap()) { undoStack.push(s); if (undoStack.length > 150) undoStack.shift(); redoStack = []; syncUndo(); queueRecentSave(); }
 function commit(fn) { pushUndo(); fn(); }
 function restore(s) {
   const o = JSON.parse(s); S.pages = o.pages; S.annots = o.annots; S.form = o.form; S.wm = o.wm;
-  S.sel = null; S.editing = null; rebuild(); syncUndo();
+  S.sel = null; S.editing = null; rebuild(); syncUndo(); queueRecentSave();
 }
 function undo() { if (!undoStack.length) return; redoStack.push(snap()); restore(undoStack.pop()); }
 function redo() { if (!redoStack.length) return; undoStack.push(snap()); restore(redoStack.pop()); }
@@ -434,7 +442,7 @@ async function openFiles(files, append) {
     if (!append || S.isSample) {
       S.sources = []; S.pages = []; S.annots = {}; S.form = {}; S.wm = null; S.ocr = {}; S.pageSel.clear();
       tcCache.clear(); linesCache.clear(); hits = []; hitIdx = -1;
-      undoStack = []; redoStack = []; S.isSample = false; S.name = baseName(files[0].name); append = false;
+      undoStack = []; redoStack = []; S.isSample = false; S.name = baseName(files[0].name); append = false; S.docId = uid();
     }
     for (const f of files) {
       let bytes;
@@ -453,6 +461,93 @@ async function openFiles(files, append) {
   } finally { busy(false); }
   if (append && added) { pushUndo(before); toast(`Added ${added} file${added > 1 ? 's' : ''} to the end.`); }
   S.sel = null; S.fit = true; rebuild();
+  if (added) saveRecent(true);
+}
+
+/* ---------- recent files (kept in this browser's storage on this device) ---------- */
+const RECENT_MAX = 12, RECENT_MAX_BYTES = 60 * 1024 * 1024;
+let dbP = null;
+function idb() {
+  if (!dbP) dbP = new Promise((res, rej) => { try { const r = indexedDB.open('folio', 1); r.onupgradeneeded = () => r.result.createObjectStore('recent', { keyPath: 'id' }); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); } catch (e) { rej(e); } });
+  return dbP;
+}
+async function idbDo(mode, fn) {
+  const db = await idb();
+  return new Promise((res, rej) => { const tx = db.transaction('recent', mode), st = tx.objectStore('recent'); let out; const r = fn(st); if (r) r.onsuccess = () => out = r.result; tx.oncomplete = () => res(out); tx.onerror = () => rej(tx.error); });
+}
+const recentList = async () => ((await idbDo('readonly', st => st.getAll())) || []).sort((a, b) => b.updated - a.updated);
+let recentT = 0;
+function queueRecentSave() { if (S.isSample || !S.docId) return; clearTimeout(recentT); recentT = setTimeout(() => saveRecent(false), 1200); }
+async function recentThumb() {
+  try {
+    const p = S.pages[0]; if (!p) return '';
+    const v0 = vp(p, 1), v = vp(p, 160 / v0.width), c = document.createElement('canvas');
+    c.width = Math.round(v.width); c.height = Math.round(v.height);
+    const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
+    await pageObj(p).render({ canvasContext: x, viewport: v }).promise;
+    return c.toDataURL('image/jpeg', 0.7);
+  } catch { return ''; }
+}
+async function saveRecent(withThumb) {
+  if (S.isSample || !S.docId || !S.pages.length) return;
+  try {
+    const size = S.sources.reduce((n, src) => n + src.bytes.length, 0);
+    if (size > RECENT_MAX_BYTES) return;
+    const prev = await idbDo('readonly', st => st.get(S.docId));
+    const usedImgs = {}; for (const list of Object.values(S.annots)) for (const o of list) if (o.ref && S.imgs[o.ref]) usedImgs[o.ref] = S.imgs[o.ref];
+    const rec = {
+      id: S.docId, name: S.name, updated: Date.now(), pages: S.pages.length,
+      thumb: withThumb || !prev?.thumb ? await recentThumb() : prev.thumb,
+      sources: prev && prev.sources.length === S.sources.length ? prev.sources : S.sources.map(src => ({ name: src.name, bytes: src.bytes })),
+      state: { pages: S.pages, annots: S.annots, form: S.form, wm: S.wm, ocr: S.ocr, imgs: usedImgs },
+    };
+    await idbDo('readwrite', st => st.put(rec));
+    const all = await recentList();
+    if (all.length > RECENT_MAX) await idbDo('readwrite', st => { all.slice(RECENT_MAX).forEach(r => st.delete(r.id)); });
+  } catch (e) { console.warn('recent save', e); }
+}
+async function openRecent(id) {
+  busy(true, 'Opening…');
+  try {
+    const rec = await idbDo('readonly', st => st.get(id)); if (!rec) throw new Error('gone');
+    S.sources = []; S.pages = []; S.annots = {}; S.form = {}; S.wm = null; S.ocr = {}; S.pageSel.clear();
+    tcCache.clear(); linesCache.clear(); hits = []; hitIdx = -1; undoStack = []; redoStack = [];
+    for (const src of rec.sources) await loadSource(src.bytes, src.name);
+    const st = JSON.parse(JSON.stringify(rec.state));
+    S.pages = st.pages; S.annots = st.annots || {}; S.form = { ...S.form, ...(st.form || {}) }; S.wm = st.wm || null; S.ocr = st.ocr || {};
+    Object.assign(S.imgs, st.imgs || {});
+    S.isSample = false; S.name = rec.name; S.docId = rec.id; S.sel = null; S.fit = true;
+    rec.updated = Date.now(); await idbDo('readwrite', s2 => s2.put(rec));
+  } catch (e) { console.error(e); toast('Couldn\u2019t open that file. It may have been cleared from this device.'); }
+  finally { busy(false); }
+  rebuild(); syncChrome();
+}
+function ago(t) {
+  const m = Math.round((Date.now() - t) / 60000);
+  if (m < 1) return 'just now'; if (m < 60) return `${m} min ago`;
+  const hr = Math.round(m / 60); if (hr < 24) return `${hr} hour${hr > 1 ? 's' : ''} ago`;
+  return new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+}
+async function openOpenModal() {
+  let list = [];
+  try { list = await recentList(); } catch {}
+  const wrap = h('div', { class: 'field' });
+  let close, armClear = false;
+  const render = () => {
+    wrap.textContent = '';
+    wrap.append(h('button', { class: 'btn primary', style: 'align-self:flex-start', onclick: () => { close(); $('#fOpen').click(); } }, 'Choose a PDF or photo'));
+    if (!list.length) { wrap.append(h('p', { class: 'note-s', style: 'margin:0' }, 'Files you open will show up here, with your changes kept, so you can pick up where you left off.')); return; }
+    wrap.append(h('div', { class: 'libh' }, h('span', { class: 'lbl' }, 'Recent'),
+      h('button', { class: 'chip', style: armClear ? 'color:var(--danger);border-color:var(--danger)' : '', onclick: async () => { if (!armClear) { armClear = true; return render(); } await idbDo('readwrite', st => st.clear()); list = []; armClear = false; if (S.docId) S.docId = uid(); render(); toast('Cleared recent files from this device.'); } }, armClear ? 'Tap again to clear all' : 'Clear all')));
+    wrap.append(h('div', { class: 'recent' }, list.map(r => h('div', { class: 'rrow' + (r.id === S.docId ? ' cur' : '') },
+      h('button', { class: 'ropen', onclick: () => { close(); if (r.id !== S.docId) openRecent(r.id); } },
+        r.thumb ? h('img', { src: r.thumb, alt: '' }) : h('span', { class: 'noth' }),
+        h('span', { class: 'rtxt' }, h('b', {}, r.name + '.pdf'), h('small', {}, `${r.pages} page${r.pages === 1 ? '' : 's'} · ${r.id === S.docId ? 'open now' : ago(r.updated)}`))),
+      h('button', { class: 'btn icon', title: 'Remove from recent', 'aria-label': `Remove ${r.name} from recent`, html: icon('close'), onclick: async () => { await idbDo('readwrite', st => st.delete(r.id)); list = list.filter(x => x.id !== r.id); if (r.id === S.docId) S.docId = uid(); render(); } })))));
+    wrap.append(h('p', { class: 'note-s', style: 'margin:0' }, `Kept only on this device, with your edits. The last ${RECENT_MAX} files are remembered.`));
+  };
+  render();
+  close = modal('Open', [wrap], c => [h('button', { class: 'btn ghost', onclick: c }, 'Close')]);
 }
 
 /* ---------- page views ---------- */
@@ -476,7 +571,8 @@ function rebuild() {
     pagesEl.append(h('div', { class: 'empty' }, h('div', { class: 'card' },
       h('h2', {}, 'Open a PDF or a photo'),
       h('p', {}, 'Files stay on this device. Nothing is uploaded.'),
-      h('button', { class: 'btn primary', onclick: () => $('#fOpen').click() }, 'Choose file'))));
+      h('button', { class: 'btn primary', onclick: () => $('#fOpen').click() }, 'Choose file'),
+      h('button', { class: 'btn ghost', onclick: () => openOpenModal() }, 'Recent files'))));
   }
   S.pages.forEach((p, i) => {
     const v = vp(p);
@@ -887,6 +983,7 @@ async function runOcr(pages, langs) {
   if (done) toast(`Found ${found} line${found === 1 ? '' : 's'} of text on ${done} page${done === 1 ? '' : 's'}. You can now search them and change them with Edit text.`);
   else if (skipped) toast('Those pages already have text, so there was nothing to scan. Edit text and Search already work on them.');
   redrawAll();
+  if (done) queueRecentSave();
 }
 
 function startWmMove(e, pv, v) {
@@ -1743,7 +1840,7 @@ $('#bOpen').insertAdjacentHTML('afterbegin', icon('open'));
 $('#bUndo').innerHTML = icon('undo'); $('#bRedo').innerHTML = icon('redo'); $('#bFind').innerHTML = icon('find');
 $('#bZout').innerHTML = icon('minus'); $('#bZin').innerHTML = icon('plus');
 $('#bSave').insertAdjacentHTML('afterbegin', icon('save'));
-$('#bOpen').onclick = () => $('#fOpen').click();
+$('#bOpen').onclick = () => openOpenModal();
 $('#bAdd').onclick = () => $('#fAdd').click();
 $('#mAdd').onclick = () => { $('#saveMenu').hidden = true; $('#fAdd').click(); };
 $('#fOpen').onchange = e => { openFiles(e.target.files, false); e.target.value = ''; };
