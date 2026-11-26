@@ -1,5 +1,5 @@
 // Folio service worker: keeps the app working offline. Your PDFs are never cached or sent anywhere.
-const CACHE = 'folio-6fb9c1f6d3';
+const CACHE = 'folio-d668a1920e';
 const CORE = ['./', './index.html', './manifest.webmanifest',
   './vendor/pdf.min.js', './vendor/pdf.worker.min.js', './vendor/pdf-lib.min.js', './vendor/jszip.min.js',
   './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png', './icons/apple-touch-icon.png', './icons/favicon.png'];

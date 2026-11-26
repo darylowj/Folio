@@ -2,7 +2,7 @@
 
 A private PDF editor that runs entirely in your browser. Files never leave your device.
 
-**Features:** view, zoom and search · highlight, draw, text boxes and comments · signatures · fill forms · add images or stamps · merge, split, reorder, rotate and delete pages · watermark (for example, marking IC copies "For verification by … only") · edit existing text · scan text (OCR) on scans and photos · save as PDF or JPG.
+**Features:** view, zoom and search · highlight, draw, text boxes and comments · saved signatures and company stamps (with background removal, backup and restore) · fill forms · add images or stamps · merge, split, reorder, rotate and delete pages · watermark (for example, marking IC copies "For verification by … only") · edit existing text · scan text (OCR) on scans and photos · save as PDF or JPG.
 
 It installs as an app on phone and computer and works offline.
 
