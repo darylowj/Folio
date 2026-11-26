@@ -109,7 +109,7 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.75;str
 .pv .pnum{position:absolute;left:0;bottom:-18px;font-family:var(--mono);font-size:11px;color:var(--muted)}
 .app[data-tool="select"] .pv svg.mk .hitable{pointer-events:visiblePainted;cursor:move}
 .app:not([data-tool="select"]) .pv{cursor:crosshair}
-.app[data-tool="hl"] .pv,.app[data-tool="ink"] .pv,.app[data-tool="wmmove"] .pv{touch-action:none}
+.app[data-tool="hl"] .pv,.app[data-tool="redact"] .pv,.app[data-tool="ink"] .pv,.app[data-tool="wmmove"] .pv{touch-action:none}
 .app[data-tool="text"] .pv{cursor:text}
 .app[data-tool="wmmove"] .pv{cursor:move}
 .app[data-tool="edit"] .pv{cursor:text}
@@ -286,7 +286,7 @@ img{max-width:100%}
 <input type="file" id="fAdd" accept="application/pdf,.pdf,image/*" multiple hidden>
 <input type="file" id="fImg" accept="image/*" hidden>
 
-<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-227ae9";</script>
+<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-1c2bce";</script>
 <script src="vendor/pdf.min.js"></script>
 <script src="vendor/pdf-lib.min.js"></script>
 <script src="vendor/jszip.min.js"></script>
@@ -315,6 +315,7 @@ function h(tag, attrs = {}, ...kids) {
 const IC = {
   select: 'M5 3l6 16 2.2-6.6L20 10z',
   hl: 'M14.5 4.5l5 5-8.5 8.5H6.5V13.5z M4 21h8',
+  redact: 'M4 5h16v5H4z M4 14h10 M4 18h16',
   ink: 'M3 17c3-6 6 2 9-3s4-8 9-5',
   text: 'M5 7V5h14v2 M12 5v14 M9 19h6',
   note: 'M4 5h16v11H9l-5 4z',
@@ -650,7 +651,11 @@ function drawOverlay(pv, p) {
   const ol = pv.querySelector('.ol'); ol.textContent = '';
   for (const o of annotsOf(p.id)) {
     const isSel = S.sel && S.sel.id === o.id;
-    if (o.type === 'hl') {
+    if (o.type === 'redact') {
+      const [x, y, w, hh] = vRect(v, [o.x, o.y, o.x + o.w, o.y + o.h]);
+      svg.append(svgEl('rect', { x, y, width: w, height: hh, fill: '#000', class: 'hitable', 'data-oid': o.id }));
+      if (isSel) svg.append(svgEl('rect', { x: x - 3, y: y - 3, width: w + 6, height: hh + 6, fill: 'none', stroke: 'var(--accent)', 'stroke-dasharray': '4 3', 'stroke-width': 1.5 }));
+    } else if (o.type === 'hl') {
       const [x, y, w, hh] = vRect(v, [o.x, o.y, o.x + o.w, o.y + o.h]);
       svg.append(svgEl('rect', { x, y, width: w, height: hh, fill: o.color, 'fill-opacity': .45, style: 'mix-blend-mode:multiply', class: 'hitable', 'data-oid': o.id }));
       if (isSel) svg.append(svgEl('rect', { x: x - 3, y: y - 3, width: w + 6, height: hh + 6, fill: 'none', stroke: 'var(--accent)', 'stroke-dasharray': '4 3', 'stroke-width': 1.5 }));
@@ -821,7 +826,7 @@ function onPagePointer(e) {
     if (e.target.dataset.rz || e.target.closest('[data-rz]')) return startResize(e, pv, p, id);
     return startMove(e, pv, p, id, wasSel);
   }
-  if (S.tool === 'hl' || S.tool === 'ink') { e.preventDefault(); return startStroke(e, pv, p, v, x, y); }
+  if (S.tool === 'hl' || S.tool === 'ink' || S.tool === 'redact') { e.preventDefault(); return startStroke(e, pv, p, v, x, y); }
   if (S.tool === 'wmmove') { e.preventDefault(); return startWmMove(e, pv, v); }
   e.preventDefault(); // stops the follow-up mouse events stealing focus; scrolling still works
   onTap(e, () => tapAction(pv, p, x, y));
@@ -866,14 +871,16 @@ function startStroke(e, pv, p, v, x0, y0) {
   const svg = pv.querySelector('svg.mk'); const r = pv.getBoundingClientRect();
   const pts = [[x0, y0]];
   let tmp;
-  if (S.tool === 'hl') tmp = svgEl('rect', { fill: S.hlColor, 'fill-opacity': .45, style: 'mix-blend-mode:multiply' });
+  const box = S.tool === 'hl' || S.tool === 'redact', tool0 = S.tool;
+  if (S.tool === 'redact') tmp = svgEl('rect', { fill: '#000', 'fill-opacity': .8 });
+  else if (S.tool === 'hl') tmp = svgEl('rect', { fill: S.hlColor, 'fill-opacity': .45, style: 'mix-blend-mode:multiply' });
   else tmp = svgEl('path', { fill: 'none', stroke: S.inkColor, 'stroke-width': S.inkWidth * S.scale, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' });
   svg.append(tmp);
   const mv = ev => {
     const evs = ev.getCoalescedEvents ? ev.getCoalescedEvents() : [ev];
     for (const ce of (evs.length ? evs : [ev])) pts.push([ce.clientX - r.left, ce.clientY - r.top]);
     const [x1, y1] = pts[pts.length - 1];
-    if (S.tool === 'hl') { tmp.setAttribute('x', Math.min(x0, x1)); tmp.setAttribute('y', Math.min(y0, y1)); tmp.setAttribute('width', Math.abs(x1 - x0)); tmp.setAttribute('height', Math.abs(y1 - y0)); }
+    if (box) { tmp.setAttribute('x', Math.min(x0, x1)); tmp.setAttribute('y', Math.min(y0, y1)); tmp.setAttribute('width', Math.abs(x1 - x0)); tmp.setAttribute('height', Math.abs(y1 - y0)); }
     else tmp.setAttribute('d', pts.map((q, i) => (i ? 'L' : 'M') + q[0].toFixed(1) + ' ' + q[1].toFixed(1)).join(''));
   };
   const g = pinchGen;
@@ -882,9 +889,10 @@ function startStroke(e, pv, p, v, x0, y0) {
     tmp.remove();
     if (pinchGen !== g) return;
     const [x1, y1] = pts[pts.length - 1];
-    if (S.tool === 'hl') {
+    if (box) {
       if (Math.abs(x1 - x0) < 4 || Math.abs(y1 - y0) < 4) return;
       const a = v.convertToPdfPoint(Math.min(x0, x1), Math.min(y0, y1)), b = v.convertToPdfPoint(Math.max(x0, x1), Math.max(y0, y1));
+      if (tool0 === 'redact') { commit(() => annotsOf(p.id).push({ type: 'redact', id: uid(), x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]), w: Math.abs(b[0] - a[0]), h: Math.abs(b[1] - a[1]) })); redrawPage(p.id); return; }
       const o = { type: 'hl', id: uid(), x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]), w: Math.abs(b[0] - a[0]), h: Math.abs(b[1] - a[1]), color: S.hlColor };
       commit(() => annotsOf(p.id).push(o));
     } else {
@@ -1230,7 +1238,7 @@ function startMove(e, pv, p, id, wasSel) {
     if (!moved && Math.hypot(dx, dy) < 4) return;
     moved = true;
     const a = v.convertToPdfPoint(0, 0), b = v.convertToPdfPoint(dx, dy), ddx = b[0] - a[0], ddy = b[1] - a[1];
-    if (o.type === 'hl') { o.x = orig.x + ddx; o.y = orig.y + ddy; }
+    if (o.type === 'hl' || o.type === 'redact') { o.x = orig.x + ddx; o.y = orig.y + ddy; }
     else if (o.type === 'ink') o.pts = orig.pts.map(q => [q[0] + ddx, q[1] + ddy]);
     else o.P = [orig.P[0] + ddx, orig.P[1] + ddy];
     redrawPage(p.id);
@@ -1418,7 +1426,7 @@ function stepHit(dir) { if (!hits.length) return; hitIdx = (hitIdx + dir + hits.
 /* ---------- tools & chrome ---------- */
 const TOOLS = [
   ['select', 'Select'], ['hl', 'Highlight'], ['ink', 'Draw'], ['text', 'Text'], ['edit', 'Edit text'], ['note', 'Comment'],
-  ['sign', 'Sign & stamp'], ['image', 'Image'], ['wm', 'Watermark'], ['ocr', 'Scan text'],
+  ['sign', 'Sign & stamp'], ['image', 'Image'], ['redact', 'Redact'], ['wm', 'Watermark'], ['ocr', 'Scan text'],
 ];
 function buildDock() {
   const d = $('#dock'); d.textContent = '';
@@ -1476,7 +1484,7 @@ function syncChrome() {
   const applySel = (fn) => { if (!o) return; commit(() => fn(o)); redrawPage(S.sel.pageId); syncChrome(); };
   const lbl = t => h('span', { class: 'lbl' }, t);
   if (S.tool === 'select' && o) {
-    const nm = { hl: 'Highlight', ink: 'Drawing', text: 'Text', img: 'Image', note: 'Comment' }[o.type];
+    const nm = { redact: 'Redaction', hl: 'Highlight', ink: 'Drawing', text: 'Text', img: 'Image', note: 'Comment' }[o.type];
     pr.append(lbl(nm));
     if (o.type === 'hl') pr.append(...swatches(HL, o.color, c => { S.hlColor = c; applySel(x => x.color = c); }));
     if (o.type === 'ink') pr.append(...swatches(INK, o.color, c => { S.inkColor = c; applySel(x => x.color = c); }));
@@ -1489,6 +1497,8 @@ function syncChrome() {
       if (S.editing !== o.id) pr.append(h('button', { class: 'chip' + (o.text ? '' : ' on'), onclick: () => startEdit(S.sel.pageId, o.id) }, o.text ? 'Edit text' : 'Type'));
     }
     pr.append(h('button', { class: 'btn danger', html: icon('trash') + `<span>${o.cover ? 'Undo this edit' : 'Delete'}</span>`, onclick: deleteSel }));
+  } else if (S.tool === 'redact') {
+    pr.append(lbl('Redact'), h('span', { class: 'hint' }, 'Drag over anything to black it out. It\u2019s removed for good when you save.'));
   } else if (S.tool === 'hl') {
     pr.append(lbl('Highlight'), ...swatches(HL, S.hlColor, c => { S.hlColor = c; syncChrome(); }), h('span', { class: 'hint' }, 'Drag across the text'));
   } else if (S.tool === 'ink') {
@@ -1910,7 +1920,8 @@ async function buildVector(pages, withWm) {
   return out.save({ useObjectStreams: false });
 }
 async function drawAnnot(out, cp, font, o, imgCache) {
-  if (o.type === 'hl') cp.drawRectangle({ x: o.x, y: o.y, width: o.w, height: o.h, color: hexRgb(o.color), opacity: 0.45, blendMode: BlendMode.Multiply });
+  if (o.type === 'redact') cp.drawRectangle({ x: o.x, y: o.y, width: o.w, height: o.h, color: rgb(0, 0, 0) });
+  else if (o.type === 'hl') cp.drawRectangle({ x: o.x, y: o.y, width: o.w, height: o.h, color: hexRgb(o.color), opacity: 0.45, blendMode: BlendMode.Multiply });
   else if (o.type === 'ink') {
     const path = o.pts.map((q, i) => (i ? 'L' : 'M') + q[0] + ' ' + (-q[1])).join(' ');
     cp.drawSvgPath(path, { x: 0, y: 0, borderColor: hexRgb(o.color), borderWidth: o.width, borderLineCap: LineCapStyle.Round });
@@ -1973,7 +1984,31 @@ async function rasterize(bytes, k = 2.5, onlyFirstAsJpg = false) {
 }
 async function exportPdf(pages) {
   if (S.wm && S.wm.flatten) return rasterize(await buildVector(pages, false));
-  return buildVector(pages, true);
+  const red = pages.map((p, i) => (S.annots[p.id] || []).some(o => o.type === 'redact') ? i : -1).filter(i => i >= 0);
+  const bytes = await buildVector(pages, true);
+  return red.length ? redactPages(bytes, red) : bytes;
+}
+// Redacted pages are rebuilt as a picture of the page with the black boxes painted in,
+// so the text, images and drawings under them no longer exist in the file.
+async function redactPages(bytes, idxs, k = 3) {
+  const src = await PDFDocument.load(bytes), out = await PDFDocument.create();
+  const doc = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise, set = new Set(idxs);
+  try {
+    for (let i = 0; i < src.getPageCount(); i++) {
+      if (!set.has(i)) { const [cp] = await out.copyPages(src, [i]); out.addPage(cp); continue; }
+      const pg = await doc.getPage(i + 1), v = pg.getViewport({ scale: k });
+      const c = document.createElement('canvas'); c.width = Math.round(v.width); c.height = Math.round(v.height);
+      const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+      await pg.render({ canvasContext: ctx, viewport: v, annotationMode: pdfjsLib.AnnotationMode.ENABLE }).promise;
+      const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.9));
+      c.width = c.height = 0;
+      const im = await out.embedJpg(new Uint8Array(await blob.arrayBuffer()));
+      const W = v.width / k, H = v.height / k;
+      out.addPage([W, H]).drawImage(im, { x: 0, y: 0, width: W, height: H });
+    }
+  } finally { doc.destroy(); }
+  out.setProducer('Folio'); out.setCreator('Folio');
+  return out.save({ useObjectStreams: false });
 }
 const suffix = () => S.wm ? '-watermarked' : '-edited';
 async function run(label, fn) {
@@ -2181,7 +2216,7 @@ async function loadSample() {
   } catch (e) { console.error(e); }
   S.fit = true; rebuild();
 }
-if (location.search.includes('debug')) window.__f = { S, blankCache, blankKey, pickTool, finishEdit, findBlankLines };
+if (location.search.includes('debug')) window.__f = { S, exportPdf, blankCache, blankKey, pickTool, finishEdit, findBlankLines };
 })();
 </script>
 
