@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover,interactive-widget=resizes-content">
 <meta name="theme-color" content="#0B6E5B">
 <meta name="description" content="A private PDF editor that runs on your device.">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -215,6 +215,7 @@ input[type=range]{accent-color:var(--accent);width:100%}
   .only-m{display:inline-flex}
   .app{grid-template-rows:auto auto minmax(0,1fr) auto}
   .work,.work.nopanel{grid-template-columns:minmax(0,1fr);position:relative;padding:0}
+  .app.typing .dock{display:none}
   .dock{grid-row:4;flex-direction:row;overflow-x:auto;border-right:0;border-top:1px solid var(--line);padding-block:6px calc(6px + env(safe-area-inset-bottom,0px));
     padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));scrollbar-width:none;justify-content:space-between}
   .tool{min-width:52px}
@@ -280,7 +281,7 @@ img{max-width:100%}
 <input type="file" id="fAdd" accept="application/pdf,.pdf,image/*" multiple hidden>
 <input type="file" id="fImg" accept="image/*" hidden>
 
-<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-b02d28";</script>
+<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-054c50";</script>
 <script src="vendor/pdf.min.js"></script>
 <script src="vendor/pdf-lib.min.js"></script>
 <script src="vendor/jszip.min.js"></script>
@@ -1249,13 +1250,16 @@ function startEdit(pageId, id, selectAll) {
   e.addEventListener('paste', ev => { ev.preventDefault(); document.execCommand('insertText', false, ev.clipboardData.getData('text/plain')); });
   e.addEventListener('keydown', ev => { if (ev.key === 'Escape') { ev.preventDefault(); finishEdit(); } ev.stopPropagation(); });
   e.addEventListener('blur', () => setTimeout(() => { if (S.editing === id) finishEdit(); }, 0));
-  e.focus();
+  $('#app').classList.add('typing');
+  e.focus({ preventScroll: true });
+  document.scrollingElement.scrollTop = 0; // keep the top bar (size, font, colour) on screen
+  setTimeout(() => { if (S.editing !== id) return; document.scrollingElement.scrollTop = 0; const r = e.getBoundingClientRect(), vr = viewer.getBoundingClientRect(); if (r.bottom > vr.bottom - 12 || r.top < vr.top + 12) viewer.scrollTop += r.top - vr.top - vr.height / 3; }, 350);
   const rg = document.createRange(); rg.selectNodeContents(e); if (!selectAll) rg.collapse(false); const sl = getSelection(); sl.removeAllRanges(); sl.addRange(rg);
   syncChrome();
 }
 function finishEdit() {
   const id = S.editing; if (!id) return;
-  S.editing = null;
+  S.editing = null; $('#app').classList.remove('typing');
   const pageId = S.sel?.pageId;
   const e = pagesEl.querySelector(`.obj[data-oid="${id}"]`);
   const o = findObj({ pageId, id });
