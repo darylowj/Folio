@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="theme-color" content="#0B6E5B">
 <meta name="description" content="A private PDF editor that runs on your device.">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -98,7 +98,8 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.75;str
 .th .acts .btn{width:28px;height:28px}
 .th .acts svg{width:16px;height:16px}
 
-.viewer{position:relative;overflow:auto;min-width:0;overscroll-behavior:contain}
+.viewer{position:relative;overflow:auto;min-width:0;overscroll-behavior:contain;touch-action:pan-x pan-y}
+.pages.pinching{will-change:transform}
 .pages{display:flex;flex-direction:column;align-items:center;gap:20px;padding:24px 16px 120px;width:max-content;min-width:100%}
 .pv{position:relative;background:#fff;box-shadow:0 1px 2px var(--shadow),0 6px 24px var(--shadow);flex:none;user-select:none;-webkit-user-select:none}
 .pv>canvas,.pv>svg,.pv>.fl,.pv>.ol{position:absolute;inset:0;width:100%;height:100%}
@@ -107,7 +108,8 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.75;str
 .pv svg.mk{pointer-events:none;overflow:visible}
 .pv .pnum{position:absolute;left:0;bottom:-18px;font-family:var(--mono);font-size:11px;color:var(--muted)}
 .app[data-tool="select"] .pv svg.mk .hitable{pointer-events:visiblePainted;cursor:move}
-.app:not([data-tool="select"]) .pv{touch-action:none;cursor:crosshair}
+.app:not([data-tool="select"]) .pv{cursor:crosshair}
+.app[data-tool="hl"] .pv,.app[data-tool="ink"] .pv,.app[data-tool="wmmove"] .pv{touch-action:none}
 .app[data-tool="text"] .pv{cursor:text}
 .app[data-tool="wmmove"] .pv{cursor:move}
 .app[data-tool="edit"] .pv{cursor:text}
@@ -276,7 +278,7 @@ img{max-width:100%}
 <input type="file" id="fAdd" accept="application/pdf,.pdf,image/*" multiple hidden>
 <input type="file" id="fImg" accept="image/*" hidden>
 
-<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-1f619b";</script>
+<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-24062d";</script>
 <script src="vendor/pdf.min.js"></script>
 <script src="vendor/pdf-lib.min.js"></script>
 <script src="vendor/jszip.min.js"></script>
@@ -441,7 +443,7 @@ async function openFiles(files, append) {
   try {
     if (!append || S.isSample) {
       S.sources = []; S.pages = []; S.annots = {}; S.form = {}; S.wm = null; S.ocr = {}; S.pageSel.clear();
-      tcCache.clear(); linesCache.clear(); hits = []; hitIdx = -1;
+      tcCache.clear(); linesCache.clear(); blankCache.clear(); hits = []; hitIdx = -1;
       undoStack = []; redoStack = []; S.isSample = false; S.name = baseName(files[0].name); append = false; S.docId = uid();
     }
     for (const f of files) {
@@ -511,7 +513,7 @@ async function openRecent(id) {
   try {
     const rec = await idbDo('readonly', st => st.get(id)); if (!rec) throw new Error('gone');
     S.sources = []; S.pages = []; S.annots = {}; S.form = {}; S.wm = null; S.ocr = {}; S.pageSel.clear();
-    tcCache.clear(); linesCache.clear(); hits = []; hitIdx = -1; undoStack = []; redoStack = [];
+    tcCache.clear(); linesCache.clear(); blankCache.clear(); hits = []; hitIdx = -1; undoStack = []; redoStack = [];
     for (const src of rec.sources) await loadSource(src.bytes, src.name);
     const st = JSON.parse(JSON.stringify(rec.state));
     S.pages = st.pages; S.annots = st.annots || {}; S.form = { ...S.form, ...(st.form || {}) }; S.wm = st.wm || null; S.ocr = st.ocr || {};
@@ -566,6 +568,8 @@ function rebuild() {
   const ratio = viewer.scrollHeight ? viewer.scrollTop / viewer.scrollHeight : 0;
   if (S.fit) S.scale = fitScale();
   io.disconnect();
+  const oldPc = new Map();
+  pagesEl.querySelectorAll('.pv').forEach(pv => { const c = pv.querySelector('.pc'); if (c && c.width) oldPc.set(pv.dataset.id, c); });
   pagesEl.textContent = '';
   if (!S.pages.length) {
     pagesEl.append(h('div', { class: 'empty' }, h('div', { class: 'card' },
@@ -577,7 +581,7 @@ function rebuild() {
   S.pages.forEach((p, i) => {
     const v = vp(p);
     const pv = h('div', { class: 'pv', 'data-id': p.id, style: `width:${v.width}px;height:${v.height}px` },
-      h('canvas', { class: 'pc' }), h('canvas', { class: 'wmc' }),
+      oldPc.get(p.id) || h('canvas', { class: 'pc' }), h('canvas', { class: 'wmc' }),
       document.createElementNS('http://www.w3.org/2000/svg', 'svg'),
       h('div', { class: 'fl' }), h('div', { class: 'ol' }), h('span', { class: 'pnum' }, `${i + 1}`));
     pv.querySelector('svg').setAttribute('class', 'mk');
@@ -592,7 +596,9 @@ function rebuild() {
 
 async function renderCanvas(pv) {
   const p = pageById(pv.dataset.id); if (!p) return;
-  const dpr = Math.min(devicePixelRatio || 1, 2.5);
+  const base = vp(p, S.scale), budget = 24e6;
+  let dpr = Math.min(Math.max(devicePixelRatio || 1, 1), 3);
+  if (base.width * base.height * dpr * dpr > budget) dpr = Math.max(1, Math.sqrt(budget / (base.width * base.height)));
   const key = `${S.scale}|${totalRot(p)}|${dpr}`;
   if (pv._key === key) return; pv._key = key;
   const v = vp(p, S.scale * dpr);
@@ -672,6 +678,15 @@ function drawOverlay(pv, p) {
     const xs = so.pts.map(q => q[0]), ys = so.pts.map(q => q[1]);
     const [x, y, w, hh] = vRect(v, [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]);
     svg.append(svgEl('rect', { x: x - 5, y: y - 5, width: w + 10, height: hh + 10, fill: 'none', stroke: 'var(--accent)', 'stroke-dasharray': '4 3', 'stroke-width': 1.5 }));
+  }
+  // in Text mode, show the blank lines and boxes Folio found
+  if (S.tool === 'text') {
+    const bl = blankCache.get(blankKey(p));
+    if (bl) for (const b of bl) {
+      const s1 = S.scale, rh = Math.min(b.room, 26);
+      svg.append(svgEl('rect', { x: b.x0 * s1, y: (b.y - rh) * s1, width: (b.x1 - b.x0) * s1, height: rh * s1, class: 'edhint', fill: 'var(--accent)', 'fill-opacity': .07 }));
+    }
+    else blanksOf(p).then(() => { if (S.tool === 'text') redrawPage(p.id); });
   }
   // in Edit text mode, outline the lines that can be changed
   if (S.tool === 'edit') {
@@ -788,11 +803,24 @@ function onPagePointer(e) {
     if (e.target.dataset.rz || e.target.closest('[data-rz]')) return startResize(e, pv, p, id);
     return startMove(e, pv, p, id, wasSel);
   }
-  e.preventDefault();
-  if (S.tool === 'hl' || S.tool === 'ink') return startStroke(e, pv, p, v, x, y);
+  if (S.tool === 'hl' || S.tool === 'ink') { e.preventDefault(); return startStroke(e, pv, p, v, x, y); }
+  if (S.tool === 'wmmove') { e.preventDefault(); return startWmMove(e, pv, v); }
+  e.preventDefault(); // stops the follow-up mouse events stealing focus; scrolling still works
+  onTap(e, () => tapAction(pv, p, x, y));
+}
+function onTap(e, act) {
+  const x0 = e.clientX, y0 = e.clientY, g = pinchGen, id = e.pointerId;
+  const done = () => { removeEventListener('pointerup', up, true); removeEventListener('pointercancel', done, true); };
+  const up = ev => { if (ev.pointerId !== id) return; done(); if (pinchGen === g && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 12) act(); };
+  addEventListener('pointerup', up, true); addEventListener('pointercancel', done, true);
+}
+function tapAction(pv, p, x, y) {
+  const v = vp(p);
+  if (S.editing) finishEdit();
   if (S.tool === 'text') {
-    const f = frameAt(v, x, y - S.fontSize * S.scale * 0.6);
-    const o = { type: 'text', id: uid(), ...f, text: '', size: S.fontSize, color: S.textColor };
+    const snapF = snapToLine(p, v, x, y);
+    const f = snapF ? snapF.f : frameAt(v, x, y - S.fontSize * S.scale * 0.6);
+    const o = { type: 'text', id: uid(), ...f, text: '', size: snapF ? snapF.size : S.fontSize, color: S.textColor };
     commit(() => annotsOf(p.id).push(o));
     S.sel = { pageId: p.id, id: o.id }; setTool('select', true);
     redrawPage(p.id); startEdit(p.id, o.id);
@@ -805,8 +833,7 @@ function onPagePointer(e) {
     S.sel = { pageId: p.id, id: o.id }; setTool('select', true); redrawPage(p.id); syncChrome();
     return;
   }
-  if (S.tool === 'wmmove') return startWmMove(e, pv, v);
-  if (S.tool === 'edit') { const released = new Promise(r => { addEventListener('pointerup', r, { once: true }); setTimeout(r, 1500); }); editExisting(pv, p, v, x, y, released); return; }
+  if (S.tool === 'edit') { editExisting(pv, p, v, x, y, Promise.resolve()); return; }
   if (S.tool === 'place' && S.pending) {
     const { ref, w, hgt } = S.pending;
     const f = frameAt(v, x - w * S.scale / 2, y - hgt * S.scale / 2);
@@ -831,9 +858,11 @@ function startStroke(e, pv, p, v, x0, y0) {
     if (S.tool === 'hl') { tmp.setAttribute('x', Math.min(x0, x1)); tmp.setAttribute('y', Math.min(y0, y1)); tmp.setAttribute('width', Math.abs(x1 - x0)); tmp.setAttribute('height', Math.abs(y1 - y0)); }
     else tmp.setAttribute('d', pts.map((q, i) => (i ? 'L' : 'M') + q[0].toFixed(1) + ' ' + q[1].toFixed(1)).join(''));
   };
+  const g = pinchGen;
   const up = () => {
     pv.removeEventListener('pointermove', mv); pv.removeEventListener('pointerup', up); pv.removeEventListener('pointercancel', up);
     tmp.remove();
+    if (pinchGen !== g) return;
     const [x1, y1] = pts[pts.length - 1];
     if (S.tool === 'hl') {
       if (Math.abs(x1 - x0) < 4 || Math.abs(y1 - y0) < 4) return;
@@ -851,6 +880,154 @@ function startStroke(e, pv, p, v, x0, y0) {
   pv.addEventListener('pointermove', mv); pv.addEventListener('pointerup', up); pv.addEventListener('pointercancel', up);
 }
 const CSSFONT = { sans: 'Helvetica, Arial, sans-serif', serif: '"Times New Roman", Times, serif', mono: '"Courier New", Courier, monospace' };
+/* ---------- blank lines and boxes (Text tool types onto them) ---------- */
+const blankCache = new Map(), blankJobs = new Map();
+const blankKey = p => p.src + ':' + p.idx + ':' + totalRot(p);
+function blanksOf(p) {
+  const key = blankKey(p);
+  if (blankCache.has(key)) return Promise.resolve(blankCache.get(key));
+  if (blankJobs.has(key)) return blankJobs.get(key);
+  const job = (async () => {
+    const k = 2, v = vp(p, k);
+    const W = Math.floor(v.width), H = Math.floor(v.height);
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+    let out = [];
+    try {
+      await pageObj(p).render({ canvasContext: ctx, viewport: v, annotationMode: pdfjsLib.AnnotationMode.ENABLE }).promise;
+      out = findBlankLines(ctx.getImageData(0, 0, W, H).data, W, H, k);
+    } catch (e) { console.warn(e); }
+    blankCache.set(key, out); blankJobs.delete(key);
+    return out;
+  })();
+  blankJobs.set(key, job);
+  return job;
+}
+function findBlankLines(px, W, H, k) {
+  const dark = new Uint8Array(W * H);
+  for (let i = 0, j = 0; i < dark.length; i++, j += 4) dark[i] = (px[j] * 0.3 + px[j + 1] * 0.59 + px[j + 2] * 0.11) < 165 ? 1 : 0;
+  const minLen = 28 * k, segs = [];
+  // horizontal runs of ink: solid rules, or evenly spaced dots and dashes
+  for (let y = 0; y < H; y++) {
+    const row = y * W; let x = 0;
+    while (x < W) {
+      if (!dark[row + x]) { x++; continue; }
+      const parts = []; let e = x, gap = 0, st = x;
+      while (e < W) {
+        if (dark[row + e]) { if (gap) { parts.push([st, e - gap - 1]); st = e; } gap = 0; }
+        else if (++gap > 7) break;
+        e++;
+      }
+      parts.push([st, e - gap - 1]);
+      const x1 = parts[parts.length - 1][1], len = x1 - x + 1;
+      if (len >= minLen) {
+        const segs2 = parts.map(q => q[1] - q[0] + 1), gaps = parts.slice(1).map((q, i) => q[0] - parts[i][1] - 1);
+        const ink = segs2.reduce((a, b) => a + b, 0) / len;
+        const cv = a => { if (a.length < 2) return 0; const m = a.reduce((x, y) => x + y, 0) / a.length; return Math.sqrt(a.reduce((x, y) => x + (y - m) ** 2, 0) / a.length) / m; };
+        const solid = ink > 0.9 && Math.max(0, ...gaps) <= 2;
+        const dotted = parts.length >= 8 && len >= minLen * 1.5 && cv(gaps) < 0.35 && cv(segs2) < 0.5;
+        if (solid || dotted) segs.push({ y, x0: x, x1 });
+      }
+      x = e;
+    }
+  }
+  // a line is a thin band: merge runs on neighbouring rows, drop thick bars
+  segs.sort((a, b) => a.y - b.y || a.x0 - b.x0);
+  const bands = [];
+  for (const s of segs) {
+    const b = bands.find(b => s.y - b.yb <= 1 && Math.min(s.x1, b.x1) - Math.max(s.x0, b.x0) > 0.8 * Math.min(s.x1 - s.x0, b.x1 - b.x0));
+    if (b) { b.yb = s.y; b.x0 = Math.min(b.x0, s.x0); b.x1 = Math.max(b.x1, s.x1); b.rows++; }
+    else bands.push({ yt: s.y, yb: s.y, x0: s.x0, x1: s.x1, rows: 1 });
+  }
+  const lines = [];
+  for (const b of bands) {
+    if (b.yb - b.yt > 3.2 * k) continue; // filled bar, not a line
+    // a row of text also makes runs; real lines have clear space just above them
+    const span = b.x1 - b.x0, xs = b.x0 + 2, xe = b.x1 - 2;
+    const inkAt = y => { let n = 0; const row = y * W; for (let x = xs; x <= xe; x++) n += dark[row + x]; return n / Math.max(1, xe - xs); };
+    if (b.yt - 2 < 0 || inkAt(b.yt - 2) > 0.25) continue;
+    let room = 0;
+    for (let y = b.yt - 2; y >= 0 && room < 60 * k; y--, room++) {
+      const r = inkAt(y);
+      if (r > 0.12) break; // text or the top of a box
+    }
+    if (room < 7 * k) continue;
+    lines.push({ x0: b.x0 / k, x1: b.x1 / k, y: b.yt / k, room: (room + 1) / k, len: span / k });
+  }
+  return lines;
+}
+function snapToLine(p, v, x, y) {
+  const bl = blankCache.get(blankKey(p)); if (!bl || !bl.length) return null;
+  const X = x / S.scale, Y = y / S.scale;
+  let best = null;
+  for (const b of bl) {
+    if (X < b.x0 - 6 || X > b.x1 + 6) continue;
+    const above = Math.min(b.room, 40) + 4;
+    if (Y > b.y + 8 || Y < b.y - above) continue;
+    if (!best || b.y < best.y) best = b; // nearest line under the finger
+  }
+  if (!best) return null;
+  const size = Math.max(6, Math.min(S.fontSize, (Math.min(best.room, 40) - 2) * 0.72));
+  const sx = (X - best.x0) > 0.35 * (best.x1 - best.x0) ? X : best.x0 + 3;
+  const baseline = best.y - Math.max(1.5, size * 0.22);
+  const top = baseline - 0.947 * size;
+  return { f: frameAt(v, sx * S.scale, top * S.scale), size: Math.round(size * 2) / 2 };
+}
+
+/* ---------- pinch to zoom ---------- */
+let pinchGen = 0;
+(() => {
+  let st = null;
+  const dist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  viewer.addEventListener('touchstart', e => {
+    if (e.touches.length !== 2 || !S.pages.length) return;
+    pinchGen++;
+    const [a, b] = e.touches, mx = (a.clientX + b.clientX) / 2, my = (a.clientY + b.clientY) / 2;
+    const pv = document.elementsFromPoint(mx, my).find(el => el.classList?.contains('pv'));
+    const vr = viewer.getBoundingClientRect(), pr = pagesEl.getBoundingClientRect();
+    let anchor = null;
+    if (pv) { const r = pv.getBoundingClientRect(); anchor = { id: pv.dataset.id, fx: (mx - r.left) / r.width, fy: (my - r.top) / r.height }; }
+    st = { d0: dist(e.touches), s0: S.scale, mx, my, r: 1, anchor };
+    pagesEl.style.transformOrigin = `${mx - pr.left}px ${my - pr.top}px`;
+    pagesEl.classList.add('pinching');
+    e.preventDefault();
+  }, { passive: false });
+  viewer.addEventListener('touchmove', e => {
+    if (!st || e.touches.length < 2) return;
+    e.preventDefault();
+    const s = Math.max(0.25, Math.min(5, st.s0 * dist(e.touches) / st.d0));
+    st.r = s / st.s0;
+    pagesEl.style.transform = `scale(${st.r})`;
+  }, { passive: false });
+  const end = e => {
+    if (!st || e.touches.length >= 2) return;
+    const { s0, r, anchor, mx, my } = st; st = null;
+    pagesEl.style.transform = ''; pagesEl.classList.remove('pinching');
+    if (Math.abs(r - 1) < 0.03) return;
+    zoomAround(s0 * r, anchor, mx, my);
+  };
+  viewer.addEventListener('touchend', end); viewer.addEventListener('touchcancel', end);
+  // Ctrl + wheel (and trackpad pinch) on a computer
+  viewer.addEventListener('wheel', e => {
+    if (!e.ctrlKey || !S.pages.length) return;
+    e.preventDefault();
+    const pv = document.elementsFromPoint(e.clientX, e.clientY).find(el => el.classList?.contains('pv'));
+    let anchor = null;
+    if (pv) { const r = pv.getBoundingClientRect(); anchor = { id: pv.dataset.id, fx: (e.clientX - r.left) / r.width, fy: (e.clientY - r.top) / r.height }; }
+    clearTimeout(viewer._wz); viewer._ws = (viewer._ws || S.scale) * Math.exp(-e.deltaY * 0.01);
+    viewer._wz = setTimeout(() => { const s = viewer._ws; viewer._ws = 0; zoomAround(s, anchor, e.clientX, e.clientY); }, 120);
+  }, { passive: false });
+})();
+function zoomAround(s, anchor, cx, cy) {
+  zoomTo(s);
+  if (!anchor) return;
+  const pv = pagesEl.querySelector(`.pv[data-id="${anchor.id}"]`); if (!pv) return;
+  const r = pv.getBoundingClientRect();
+  viewer.scrollLeft += r.left + anchor.fx * r.width - cx;
+  viewer.scrollTop += r.top + anchor.fy * r.height - cy;
+}
+
 const linesCache = new Map();
 const lineKey = p => p.src + ':' + p.idx;
 const sameLine = (o, ln) => Math.abs(o.cover[0] - (ln.x - 1)) < 1 && Math.abs(o.cover[1] - (ln.y - ln.size * 0.28)) < 1;
@@ -1196,12 +1373,12 @@ function pickTool(k) {
   if (k === 'wm') return openWmModal();
   if (k === 'ocr') return openOcrModal();
   setTool(k);
-  if (k === 'edit') redrawAll();
+  if (k === 'edit' || k === 'text') redrawAll();
 }
 function setTool(k, keepSel) {
-  const wasEdit = S.tool === 'edit';
+  const prev = S.tool, wasEdit = prev === 'edit' || prev === 'text';
   S.tool = k; if (k !== 'place') S.pending = null;
-  if (wasEdit && k !== 'edit') pagesEl.querySelectorAll('.edhint').forEach(r => r.remove());
+  if (wasEdit && k !== prev) pagesEl.querySelectorAll('.edhint').forEach(r => r.remove());
   if (!keepSel && k !== 'select' && S.sel) { const old = S.sel; S.sel = null; redrawPage(old.pageId); }
   $('#app').dataset.tool = k; syncChrome();
 }
@@ -1248,7 +1425,7 @@ function syncChrome() {
     pr.append(lbl('Pen'), ...swatches(INK, S.inkColor, c => { S.inkColor = c; syncChrome(); }),
       ...[1, 2, 4].map(w => h('button', { class: 'chip' + (S.inkWidth === w ? ' on' : ''), onclick: () => { S.inkWidth = w; syncChrome(); } }, ['Fine', 'Medium', 'Thick'][[1, 2, 4].indexOf(w)])));
   } else if (S.tool === 'text') {
-    pr.append(lbl('Text'), ...swatches(INK, S.textColor, c => { S.textColor = c; syncChrome(); }), sizeSelect(S.fontSize, s => { S.fontSize = s; syncChrome(); }), h('span', { class: 'hint' }, 'Tap where the text should go'));
+    pr.append(lbl('Text'), ...swatches(INK, S.textColor, c => { S.textColor = c; syncChrome(); }), sizeSelect(S.fontSize, s => { S.fontSize = s; syncChrome(); }), h('span', { class: 'hint' }, 'Tap a line or box to type on it'));
   } else if (S.tool === 'edit') {
     pr.append(lbl('Edit text'), h('span', { class: 'hint' }, 'Tap a line to change it. Scanned page? Run Scan text first.'));
   } else if (S.tool === 'note') {
@@ -1861,7 +2038,7 @@ $('#bUndo').onclick = undo; $('#bRedo').onclick = redo;
 $('#bFind').onclick = () => toggleSearch();
 $('#bPanel').onclick = () => togglePanel();
 $('#bSplit').onclick = openSplitModal;
-const zoomTo = s => { S.fit = false; S.scale = Math.max(0.25, Math.min(4, s)); pagesEl.querySelectorAll('.pv').forEach(pv => pv._key = null); rebuild(); };
+const zoomTo = s => { S.fit = false; S.scale = Math.max(0.25, Math.min(5, s)); pagesEl.querySelectorAll('.pv').forEach(pv => pv._key = null); rebuild(); };
 $('#bZin').onclick = () => zoomTo(S.scale * 1.2);
 $('#bZout').onclick = () => zoomTo(S.scale / 1.2);
 $('#bFit').onclick = () => { S.fit = true; rebuild(); };
@@ -1930,6 +2107,7 @@ let rzT, wasWide = innerWidth > 760; addEventListener('resize', () => { clearTim
     try { openFiles(await Promise.all(lp.files.map(f => f.getFile())), false); } catch (e) { console.error(e); }
   });
 })();
+if (location.search.includes('debug')) window.__f = { S, blankCache, blankKey, pickTool, finishEdit, findBlankLines };
 })();
 </script>
 
