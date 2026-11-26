@@ -1798,7 +1798,19 @@ let rzT, wasWide = innerWidth > 760; addEventListener('resize', () => { clearTim
 </script>
 
 <script>
-if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+if ('serviceWorker' in navigator) {
+  const hadController = !!navigator.serviceWorker.controller;
+  addEventListener('load', () => navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(r => r.update()).catch(() => {}));
+  // a newer Folio took over while this page was open: offer a reload instead of interrupting work
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || document.getElementById('updbar')) return;
+    const bar = document.createElement('div'); bar.id = 'updbar'; bar.className = 'toast';
+    bar.style.display = 'flex'; bar.style.gap = '12px'; bar.style.alignItems = 'center';
+    bar.textContent = 'A new version of Folio is ready. ';
+    const b = document.createElement('button'); b.textContent = 'Reload'; b.className = 'btn primary'; b.style.height = '32px';
+    b.onclick = () => location.reload(); bar.append(b); document.body.append(bar);
+  });
+}
 </script>
 </body>
 </html>
