@@ -123,6 +123,9 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.75;str
 .obj.text{white-space:pre;font-family:Helvetica,Arial,sans-serif;line-height:1.2;min-width:8px;min-height:1em}
 .obj.text.editing{outline:1.5px solid var(--accent);cursor:text;user-select:text;-webkit-user-select:text;background:rgba(255,255,255,.7)}
 .obj.text:empty::before{content:"Type here";color:#9AA}
+.mvh{position:absolute;width:26px;height:26px;margin:-13px 0 0 -34px;border-radius:50%;background:var(--accent);color:#fff;display:grid;place-items:center;pointer-events:auto;touch-action:none;cursor:move;box-shadow:0 1px 4px var(--shadow);z-index:3}
+.mvh::after{content:"";position:absolute;inset:-12px}
+.mvh svg{width:16px;height:16px}
 .obj.text:empty:not(.editing){outline:1.5px dashed var(--accent);outline-offset:3px;background:rgba(255,255,255,.55)}
 .app[data-tool="select"] .obj.text.sel:not(.editing)::after{content:"";position:absolute;inset:-16px}
 .obj.img img{width:100%;height:100%;display:block;pointer-events:none}
@@ -281,7 +284,7 @@ img{max-width:100%}
 <input type="file" id="fAdd" accept="application/pdf,.pdf,image/*" multiple hidden>
 <input type="file" id="fImg" accept="image/*" hidden>
 
-<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-ecb0ea";</script>
+<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-d75c2b";</script>
 <script src="vendor/pdf.min.js"></script>
 <script src="vendor/pdf-lib.min.js"></script>
 <script src="vendor/jszip.min.js"></script>
@@ -1251,11 +1254,35 @@ function startEdit(pageId, id, selectAll) {
   e.addEventListener('keydown', ev => { if (ev.key === 'Escape') { ev.preventDefault(); finishEdit(); } ev.stopPropagation(); });
   e.addEventListener('blur', () => setTimeout(() => { if (S.editing === id) finishEdit(); }, 0));
   $('#app').classList.add('typing');
+  addMoveHandle(pv, e, pageId, id);
   e.focus({ preventScroll: true });
   document.scrollingElement.scrollTop = 0; // keep the top bar (size, font, colour) on screen
   setTimeout(() => { if (S.editing !== id) return; document.scrollingElement.scrollTop = 0; const r = e.getBoundingClientRect(), vr = viewer.getBoundingClientRect(); if (r.bottom > vr.bottom - 12 || r.top < vr.top + 12) viewer.scrollTop += r.top - vr.top - vr.height / 3; }, 350);
   const rg = document.createRange(); rg.selectNodeContents(e); if (!selectAll) rg.collapse(false); const sl = getSelection(); sl.removeAllRanges(); sl.addRange(rg);
   syncChrome();
+}
+// a handle beside the box being typed in, so it can be moved without closing the keyboard
+function addMoveHandle(pv, el, pageId, id) {
+  const ol = pv.querySelector('.ol'); ol.querySelector('.mvh')?.remove();
+  const mh = h('span', { class: 'mvh', 'aria-label': 'Move text box', html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"/></svg>' });
+  const place = () => { mh.style.left = el.style.left; mh.style.top = `calc(${el.style.top} + ${el.offsetHeight / 2}px)`; };
+  place(); ol.append(mh);
+  mh.addEventListener('pointerdown', ev => {
+    ev.preventDefault(); ev.stopPropagation();
+    const o = findObj({ pageId, id }); if (!o) return;
+    const p = pageById(pageId), v = vp(p), P0 = o.P.slice(), sx = ev.clientX, sy = ev.clientY;
+    const l0 = parseFloat(el.style.left), t0 = parseFloat(el.style.top);
+    mh.setPointerCapture(ev.pointerId); let moved = false;
+    const mv = e2 => {
+      const dx = e2.clientX - sx, dy = e2.clientY - sy; moved = true;
+      const a = v.convertToPdfPoint(0, 0), b = v.convertToPdfPoint(dx, dy);
+      o.P = [P0[0] + b[0] - a[0], P0[1] + b[1] - a[1]];
+      el.style.left = (l0 + dx) + 'px'; el.style.top = (t0 + dy) + 'px'; place();
+    };
+    const up = () => { mh.removeEventListener('pointermove', mv); mh.removeEventListener('pointerup', up); mh.removeEventListener('pointercancel', up); el.focus({ preventScroll: true }); };
+    mh.addEventListener('pointermove', mv); mh.addEventListener('pointerup', up); mh.addEventListener('pointercancel', up);
+  });
+  el.addEventListener('input', place);
 }
 function finishEdit() {
   const id = S.editing; if (!id) return;

@@ -17,4 +17,4 @@ Hosted with GitHub Pages from the `main` branch.
 ## About Edit text
 Edit text covers the original line with a patch in the page's background colour and writes your new text on top, in a matching size, colour and a standard font (sans, serif or mono). It doesn't reflow paragraphs, and the original text is still in the file underneath, so don't rely on it to hide sensitive information.
 
-Current build: 2026.11.26-ecb0ea
+Current build: 2026.11.26-d75c2b
