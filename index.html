@@ -281,7 +281,7 @@ img{max-width:100%}
 <input type="file" id="fAdd" accept="application/pdf,.pdf,image/*" multiple hidden>
 <input type="file" id="fImg" accept="image/*" hidden>
 
-<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-054c50";</script>
+<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-ecb0ea";</script>
 <script src="vendor/pdf.min.js"></script>
 <script src="vendor/pdf-lib.min.js"></script>
 <script src="vendor/jszip.min.js"></script>
@@ -1443,13 +1443,12 @@ function syncChrome() {
     if (o.type === 'hl') pr.append(...swatches(HL, o.color, c => { S.hlColor = c; applySel(x => x.color = c); }));
     if (o.type === 'ink') pr.append(...swatches(INK, o.color, c => { S.inkColor = c; applySel(x => x.color = c); }));
     if (o.type === 'text') {
-      if (!o.text && S.editing !== o.id) pr.append(h('button', { class: 'chip on', onclick: () => startEdit(S.sel.pageId, o.id) }, 'Type'), h('span', { class: 'hint' }, 'Drag the box into place, then tap it to type'));
       pr.append(...swatches(INK, o.color, c => { S.textColor = c; applySel(x => x.color = c); }));
       pr.append(sizeSelect(o.size, s => { S.fontSize = s; applySel(x => x.size = s); }));
       const fs = h('select', { class: 'chip', 'aria-label': 'Font' }, h('option', { value: 'sans' }, 'Sans'), h('option', { value: 'serif' }, 'Serif'), h('option', { value: 'mono' }, 'Mono'));
       fs.value = o.font || 'sans'; fs.addEventListener('change', () => applySel(x => x.font = fs.value));
       pr.append(fs, h('button', { class: 'chip' + (o.bold ? ' on' : ''), style: 'font-weight:700', 'aria-pressed': String(!!o.bold), onclick: () => applySel(x => x.bold = !x.bold) }, 'B'));
-      if (S.editing !== o.id) pr.append(h('button', { class: 'chip', onclick: () => startEdit(S.sel.pageId, o.id) }, 'Edit text'));
+      if (S.editing !== o.id) pr.append(h('button', { class: 'chip' + (o.text ? '' : ' on'), onclick: () => startEdit(S.sel.pageId, o.id) }, o.text ? 'Edit text' : 'Type'));
     }
     pr.append(h('button', { class: 'btn danger', html: icon('trash') + `<span>${o.cover ? 'Undo this edit' : 'Delete'}</span>`, onclick: deleteSel }));
   } else if (S.tool === 'hl') {
