@@ -108,6 +108,7 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.75;str
 .app:not([data-tool="select"]) .pv{touch-action:none;cursor:crosshair}
 .app[data-tool="text"] .pv{cursor:text}
 .app[data-tool="wmmove"] .pv{cursor:move}
+.app[data-tool="edit"] .pv{cursor:text}
 .app:not([data-tool="select"]) .fl{pointer-events:none}
 .ol{pointer-events:none}
 .obj{position:absolute;transform-origin:0 0;pointer-events:auto}
@@ -116,7 +117,7 @@ svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.75;str
 .obj.sel{outline:1.5px dashed var(--accent);outline-offset:3px}
 .obj.text{white-space:pre;font-family:Helvetica,Arial,sans-serif;line-height:1.2;min-width:8px;min-height:1em}
 .obj.text.editing{outline:1.5px solid var(--accent);cursor:text;user-select:text;-webkit-user-select:text;background:rgba(255,255,255,.7)}
-.obj.text:empty::before{content:"Type here";color:#9AA}
+.obj.text.editing:empty::before{content:"Type here";color:#9AA}
 .obj.img img{width:100%;height:100%;display:block;pointer-events:none}
 .obj .rz{position:absolute;right:-9px;bottom:-9px;width:18px;height:18px;border-radius:50%;background:var(--accent);border:2px solid #fff;cursor:nwse-resize;touch-action:none}
 .obj.note{width:26px;height:26px}
@@ -243,6 +244,7 @@ img{max-width:100%}
 <input type="file" id="fAdd" accept="application/pdf,.pdf,image/*" multiple hidden>
 <input type="file" id="fImg" accept="image/*" hidden>
 
+<script>window.FOLIO_SITE = true;</script>
 <script src="vendor/pdf.min.js"></script>
 <script src="vendor/pdf-lib.min.js"></script>
 <script src="vendor/jszip.min.js"></script>
@@ -276,6 +278,8 @@ const IC = {
   note: 'M4 5h16v11H9l-5 4z',
   sign: 'M3 17c2-3 4-10 6-10s0 8 2 8 3-5 5-5 1 4 3 4 M3 21h18',
   image: 'M4 5h16v14H4z M4 16l5-5 4 4 3-3 4 4 M15.5 8.5a1.5 1.5 0 1 1 0 .01',
+  edit: 'M4 20h4L19 9l-4-4L4 16z M13 7l4 4',
+  ocr: 'M4 8V4h4 M16 4h4v4 M20 16v4h-4 M8 20H4v-4 M8 10h8 M8 14h5',
   wm: 'M12 3s6 7 6 11a6 6 0 0 1-12 0c0-4 6-11 6-11z M9.5 14.5a2.5 2.5 0 0 0 2.5 2.5',
   pages: 'M4 4h7v7H4z M13 4h7v7h-7z M4 13h7v7H4z M13 13h7v7h-7z',
   open: 'M3 6h6l2 2h10v11H3z',
@@ -313,6 +317,7 @@ const S = {
   sources: [], pages: [], annots: {}, form: {}, wm: null, imgs: {},
   name: 'sample-form', isSample: true,
   tool: 'select', hlColor: '#FFE14D', inkColor: '#1D3A8A', textColor: '#111111', inkWidth: 2, fontSize: 14,
+  ocr: {},
   scale: 1, fit: true, sel: null, editing: null, pending: null, cur: 0, pageSel: new Set(),
 };
 let undoStack = [], redoStack = [];
@@ -402,7 +407,8 @@ async function openFiles(files, append) {
   let added = 0;
   try {
     if (!append || S.isSample) {
-      S.sources = []; S.pages = []; S.annots = {}; S.form = {}; S.wm = null; S.pageSel.clear();
+      S.sources = []; S.pages = []; S.annots = {}; S.form = {}; S.wm = null; S.ocr = {}; S.pageSel.clear();
+      tcCache.clear(); linesCache.clear(); hits = []; hitIdx = -1;
       undoStack = []; redoStack = []; S.isSample = false; S.name = baseName(files[0].name); append = false;
     }
     for (const f of files) {
@@ -514,7 +520,8 @@ function drawOverlay(pv, p) {
       const st = `left:${x}px;top:${y}px;transform:rotate(${ang}deg)`;
       let e;
       if (o.type === 'text') {
-        e = h('div', { class: 'obj text', 'data-oid': o.id, style: `${st};font-size:${o.size * S.scale}px;color:${o.color}` });
+        if (o.cover) { const [cx, cy, cw, ch] = vRect(v, [o.cover[0], o.cover[1], o.cover[0] + o.cover[2], o.cover[1] + o.cover[3]]); svg.prepend(svgEl('rect', { x: cx, y: cy, width: cw, height: ch, fill: o.coverColor || '#ffffff' })); }
+        e = h('div', { class: 'obj text', 'data-oid': o.id, style: `${st};font-size:${o.size * S.scale}px;color:${o.color};font-family:${CSSFONT[o.font || 'sans']};font-weight:${o.bold ? 700 : 400}` });
         e.textContent = o.text;
         e.addEventListener('dblclick', () => startEdit(p.id, o.id));
       } else if (o.type === 'img') {
@@ -544,6 +551,16 @@ function drawOverlay(pv, p) {
     const xs = so.pts.map(q => q[0]), ys = so.pts.map(q => q[1]);
     const [x, y, w, hh] = vRect(v, [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]);
     svg.append(svgEl('rect', { x: x - 5, y: y - 5, width: w + 10, height: hh + 10, fill: 'none', stroke: 'var(--accent)', 'stroke-dasharray': '4 3', 'stroke-width': 1.5 }));
+  }
+  // in Edit text mode, outline the lines that can be changed
+  if (S.tool === 'edit') {
+    const key = lineKey(p);
+    if (linesCache.has(key)) for (const ln of linesCache.get(key)) {
+      if (annotsOf(p.id).some(o => o.cover && sameLine(o, ln))) continue;
+      const [x, y, w, hh] = vRect(v, [ln.x, ln.y - ln.size * 0.25, ln.x + ln.w, ln.y + ln.size * 0.95]);
+      svg.append(svgEl('rect', { x: x - 2, y: y - 1, width: w + 4, height: hh + 2, rx: 2, class: 'edhint', fill: 'var(--accent)', 'fill-opacity': .06, stroke: 'var(--accent)', 'stroke-opacity': .45, 'stroke-dasharray': '3 3', 'stroke-width': 1 }));
+    }
+    else linesOf(p).then(() => { if (S.tool === 'edit') redrawPage(p.id); });
   }
   // search hits
   hits.forEach((hit, i) => {
@@ -668,6 +685,7 @@ function onPagePointer(e) {
     return;
   }
   if (S.tool === 'wmmove') return startWmMove(e, pv, v);
+  if (S.tool === 'edit') { const released = new Promise(r => { addEventListener('pointerup', r, { once: true }); setTimeout(r, 1500); }); editExisting(pv, p, v, x, y, released); return; }
   if (S.tool === 'place' && S.pending) {
     const { ref, w, hgt } = S.pending;
     const f = frameAt(v, x - w * S.scale / 2, y - hgt * S.scale / 2);
@@ -711,6 +729,141 @@ function startStroke(e, pv, p, v, x0, y0) {
   };
   pv.addEventListener('pointermove', mv); pv.addEventListener('pointerup', up); pv.addEventListener('pointercancel', up);
 }
+const CSSFONT = { sans: 'Helvetica, Arial, sans-serif', serif: '"Times New Roman", Times, serif', mono: '"Courier New", Courier, monospace' };
+const linesCache = new Map();
+const lineKey = p => p.src + ':' + p.idx;
+const sameLine = (o, ln) => Math.abs(o.cover[0] - (ln.x - 1)) < 1 && Math.abs(o.cover[1] - (ln.y - ln.size * 0.28)) < 1;
+async function linesOf(p) {
+  const key = lineKey(p);
+  if (linesCache.has(key)) return linesCache.get(key);
+  const tc = await textOf(p), po = pageObj(p), items = [];
+  for (const it of tc.items) {
+    if (!it.str || !it.str.trim()) continue;
+    const [a, b, c, d, e, f] = it.transform;
+    if (Math.abs(b) > 0.01 || Math.abs(c) > 0.01 || a <= 0 || d <= 0) continue; // only plain horizontal text
+    let fam = (tc.styles[it.fontName] || {}).fontFamily || 'sans-serif', bold = false;
+    try { if (po.commonObjs.has(it.fontName)) { const fo = po.commonObjs.get(it.fontName); bold = /bold|black|heavy|semibold|demi/i.test(fo.name || '') || fo.bold; if (/times|serif|georgia|garamond|cambria|minion/i.test(fo.name || '') && !/sans/i.test(fo.name || '')) fam = 'serif'; if (/courier|mono|consol/i.test(fo.name || '')) fam = 'monospace'; } } catch {}
+    items.push({ str: it.str, x: e, y: f, w: it.width, size: d, font: /mono/.test(fam) ? 'mono' : (/^serif$/.test(fam) ? 'serif' : 'sans'), bold });
+  }
+  for (const l of S.ocr[key] || []) items.push({ ...l, font: 'sans', bold: false });
+  items.sort((A, B) => (B.y - A.y) || (A.x - B.x));
+  const lines = [];
+  for (const it of items) {
+    const ln = lines.find(L => Math.abs(L.y - it.y) < Math.max(L.size, it.size) * 0.3 && it.x >= L.x + L.w - L.size * 0.4 && it.x - (L.x + L.w) < L.size * 1.2);
+    if (ln) {
+      const gap = it.x - (ln.x + ln.w);
+      if (gap > ln.size * 0.15 && !/\s$/.test(ln.str) && !/^\s/.test(it.str)) ln.str += ' ';
+      ln.str += it.str; ln.w = it.x + it.w - ln.x; ln.size = Math.max(ln.size, it.size);
+    } else lines.push({ ...it });
+  }
+  lines.forEach(l => l.str = l.str.replace(/\s+$/, ''));
+  linesCache.set(key, lines);
+  return lines;
+}
+function sampleColors(pv, p, ln) {
+  try {
+    const c = pv.querySelector('.pc'), v = vp(p), k = c.width / pv.clientWidth;
+    let [x, y, w, hh] = vRect(v, [ln.x, ln.y - ln.size * 0.25, ln.x + ln.w, ln.y + ln.size * 0.95]);
+    x = Math.max(0, Math.floor(x * k)); y = Math.max(0, Math.floor(y * k)); w = Math.max(2, Math.ceil(w * k)); hh = Math.max(2, Math.ceil(hh * k));
+    w = Math.min(w, c.width - x); hh = Math.min(hh, c.height - y);
+    const d = c.getContext('2d').getImageData(x, y, w, hh).data, counts = new Map();
+    const px = i => [d[i], d[i + 1], d[i + 2]];
+    for (let yy = 0; yy < hh; yy++) for (let xx = 0; xx < w; xx++) {
+      if (yy && yy < hh - 1 && xx && xx < w - 1) continue;
+      const [r, g, b] = px((yy * w + xx) * 4), q = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
+      counts.set(q, (counts.get(q) || 0) + 1);
+    }
+    let best = 0, bq = 0xfff; for (const [q, n] of counts) if (n > best) { best = n; bq = q; }
+    const bg = [((bq >> 8) & 15) * 17, ((bq >> 4) & 15) * 17, (bq & 15) * 17];
+    let far = 0, fg = [17, 17, 17];
+    for (let i = 0; i < d.length; i += 4) { const dist = Math.abs(d[i] - bg[0]) + Math.abs(d[i + 1] - bg[1]) + Math.abs(d[i + 2] - bg[2]); if (dist > far) { far = dist; fg = px(i); } }
+    const hex = a => '#' + a.map(n => n.toString(16).padStart(2, '0')).join('');
+    return { fg: hex(fg), bg: hex(bg) };
+  } catch { return { fg: '#111111', bg: '#ffffff' }; }
+}
+async function editExisting(pv, p, v, x, y, released) {
+  const [ux, uy] = v.convertToPdfPoint(x, y);
+  const lines = await linesOf(p);
+  const existing = annotsOf(p.id).find(o => o.cover && ux >= o.cover[0] - 2 && ux <= o.cover[0] + o.cover[2] + 2 && uy >= o.cover[1] - 2 && uy <= o.cover[1] + o.cover[3] + 2);
+  await released; await new Promise(r => setTimeout(r, 0));
+  if (existing) { S.sel = { pageId: p.id, id: existing.id }; setTool('select', true); redrawPage(p.id); startEdit(p.id, existing.id); return; }
+  const ln = lines.find(l => ux >= l.x - 3 && ux <= l.x + l.w + 3 && uy >= l.y - l.size * 0.35 && uy <= l.y + l.size * 1.05);
+  if (!ln) { toast(lines.length ? 'Tap directly on a line of text (they\u2019re outlined).' : 'This page has no text Folio can read. If it\u2019s a scan or photo, run Scan text first.'); return; }
+  const { fg, bg } = sampleColors(pv, p, ln);
+  const o = { type: 'text', id: uid(), P: [ln.x, ln.y + 0.947 * ln.size * 0.98], u: [1, 0], d: [0, -1], text: ln.str, size: Math.round(ln.size * 10) / 10, color: fg, font: ln.font, bold: ln.bold,
+    cover: [ln.x - 1, ln.y - ln.size * 0.28, ln.w + 2, ln.size * 1.22], coverColor: bg };
+  commit(() => annotsOf(p.id).push(o));
+  S.sel = { pageId: p.id, id: o.id }; setTool('select', true);
+  redrawPage(p.id); startEdit(p.id, o.id, true);
+}
+
+/* ---------- OCR (on-device, Tesseract) ---------- */
+const loadScript = src => new Promise((res, rej) => { if (document.querySelector(`script[src="${src}"]`)) return res(); const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('Couldn\u2019t load the text reader. Check your connection the first time you use it.')); document.head.append(s); });
+function openOcrModal() {
+  if (!window.FOLIO_SITE) {
+    modal('Scan text', [h('p', { class: 'note-s', style: 'margin:0' }, 'Scanning for text works in the Folio app itself, because it needs to download its reading data once. Open darylowj.github.io/Folio to use it.')], c => [h('button', { class: 'btn primary', onclick: c }, 'OK')]);
+    return;
+  }
+  const scope = h('select', { id: 'ocrScope' }, h('option', { value: 'cur' }, `This page (${S.cur + 1})`), h('option', { value: 'all' }, `All ${S.pages.length} pages`));
+  const lang = h('select', { id: 'ocrLang' }, h('option', { value: 'eng' }, 'English'), h('option', { value: 'eng+msa' }, 'English and Malay'));
+  const body = [
+    h('p', { class: 'note-s', style: 'margin:0' }, 'Reads the words on scanned pages and photos so you can search them, copy them, and change them with Edit text. The saved PDF becomes searchable too. It all happens on this device.'),
+    h('div', { class: 'row' }, h('label', { class: 'field' }, h('span', {}, 'Pages'), scope), h('label', { class: 'field' }, h('span', {}, 'Language'), lang)),
+    h('p', { class: 'note-s', style: 'margin:0' }, 'The first scan downloads about 7 MB of reading data. After that it works offline. Pages that already have text are skipped.'),
+  ];
+  modal('Scan text', body, c => [h('button', { class: 'btn ghost', onclick: c }, 'Cancel'), h('button', { class: 'btn primary', onclick: () => { const pages = scope.value === 'all' ? S.pages.slice() : [S.pages[S.cur] || S.pages[0]]; const l = lang.value.split('+'); c(); runOcr(pages, l); } }, 'Scan')]);
+}
+async function runOcr(pages, langs) {
+  if (S.editing) finishEdit();
+  let worker, found = 0, done = 0, skipped = 0, pageNo = 0;
+  const say = (m) => busy(true, m);
+  try {
+    say('Getting the text reader ready…');
+    await loadScript('vendor/ocr/tesseract.min.js');
+    const base = new URL('vendor/ocr/', location.href).href;
+    worker = await Tesseract.createWorker(langs, 1, {
+      workerPath: base + 'worker.min.js', corePath: base, langPath: base + 'lang', workerBlobURL: false,
+      logger: m => { if (m.status === 'recognizing text') say(`Reading page ${pageNo} of ${pages.length}… ${Math.round(m.progress * 100)}%`); else if (/load/.test(m.status)) say('Getting the text reader ready…'); },
+    });
+    const seen = new Set();
+    for (const p of pages) {
+      pageNo++;
+      const key = lineKey(p); if (seen.has(key)) continue; seen.add(key);
+      const tc = await textOf(p);
+      if (tc.items.reduce((n, it) => n + (it.str || '').trim().length, 0) > 25) { skipped++; continue; }
+      const po = pageObj(p), base1 = po.getViewport({ scale: 1, rotation: po.rotate });
+      const k = Math.min(300 / 72, 4200 / Math.max(base1.width, base1.height));
+      const v = po.getViewport({ scale: k, rotation: po.rotate });
+      const c = document.createElement('canvas'); c.width = Math.round(v.width); c.height = Math.round(v.height);
+      const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+      say(`Reading page ${pageNo} of ${pages.length}…`);
+      await po.render({ canvasContext: ctx, viewport: v }).promise;
+      const { data } = await worker.recognize(c);
+      const lines = [];
+      const all = data.lines && data.lines.length ? data.lines : (data.blocks || []).flatMap(b => (b.paragraphs || []).flatMap(pp => pp.lines || []));
+      for (const ln of all) {
+        const t = (ln.text || '').replace(/\s+/g, ' ').trim();
+        if (!t || (ln.confidence ?? 100) < 35) continue;
+        const { x0, y0, x1, y1 } = ln.bbox;
+        const A = v.convertToPdfPoint(x0, y1), B = v.convertToPdfPoint(x1, y0);
+        const hpx = y1 - y0, rh = ln.rowAttributes && ln.rowAttributes.row_height;
+        const size = (rh && rh > hpx * 0.85 && rh < hpx * 1.7 ? rh : hpx / 1.15) / k;
+        let by;
+        if (ln.baseline && ln.baseline.has_baseline !== false && isFinite(ln.baseline.y0)) by = v.convertToPdfPoint(x0, (ln.baseline.y0 + ln.baseline.y1) / 2)[1];
+        else by = Math.min(A[1], B[1]) + (/[gjpqy,()\[\];]/.test(t) ? size * 0.2 : 0);
+        lines.push({ str: t, x: Math.min(A[0], B[0]), y: by, w: Math.abs(B[0] - A[0]), size });
+      }
+      c.width = c.height = 0;
+      S.ocr[key] = lines; linesCache.delete(key); tcCache.delete(key + ':ocr');
+      found += lines.length; done++;
+    }
+  } catch (e) { console.error(e); toast(e?.message?.length < 160 ? e.message : 'The text reader stopped unexpectedly. Try again with one page.'); }
+  finally { try { await worker?.terminate(); } catch {} busy(false); }
+  if (done) toast(`Found ${found} line${found === 1 ? '' : 's'} of text on ${done} page${done === 1 ? '' : 's'}. You can now search them and change them with Edit text.`);
+  else if (skipped) toast('Those pages already have text, so there was nothing to scan. Edit text and Search already work on them.');
+  redrawAll();
+}
+
 function startWmMove(e, pv, v) {
   if (!S.wm) return setTool('select');
   pv.setPointerCapture(e.pointerId);
@@ -768,7 +921,7 @@ function startResize(e, pv, p, id) {
 }
 
 let editBefore = null;
-function startEdit(pageId, id) {
+function startEdit(pageId, id, selectAll) {
   const pv = pagesEl.querySelector(`.pv[data-id="${pageId}"]`); if (!pv) return;
   const e = pv.querySelector(`.obj[data-oid="${id}"]`); if (!e) return;
   S.editing = id; S.sel = { pageId, id }; editBefore = snap();
@@ -779,7 +932,7 @@ function startEdit(pageId, id) {
   e.addEventListener('keydown', ev => { if (ev.key === 'Escape') { ev.preventDefault(); finishEdit(); } ev.stopPropagation(); });
   e.addEventListener('blur', () => setTimeout(() => { if (S.editing === id) finishEdit(); }, 0));
   e.focus();
-  const rg = document.createRange(); rg.selectNodeContents(e); rg.collapse(false); const sl = getSelection(); sl.removeAllRanges(); sl.addRange(rg);
+  const rg = document.createRange(); rg.selectNodeContents(e); if (!selectAll) rg.collapse(false); const sl = getSelection(); sl.removeAllRanges(); sl.addRange(rg);
   syncChrome();
 }
 function finishEdit() {
@@ -791,7 +944,8 @@ function finishEdit() {
   if (o && e) {
     const t = e.innerText.replace(/ /g, ' ').replace(/\n$/, '');
     const prev = JSON.parse(editBefore || '{}');
-    if (!t.trim()) { S.annots[pageId] = annotsOf(pageId).filter(x => x.id !== id); S.sel = null; }
+    if (!t.trim() && !o.cover) { S.annots[pageId] = annotsOf(pageId).filter(x => x.id !== id); S.sel = null; }
+    else if (!t.trim()) o.text = '';
     else o.text = t;
     if (editBefore && snap() !== editBefore) {
       // undo should skip the empty "just created" state when the text box was new
@@ -877,7 +1031,8 @@ async function runSearch(q) {
   q = q.trim().toLowerCase(); hits = []; hitIdx = -1;
   if (q) for (const p of S.pages) {
     const tc = await textOf(p);
-    for (const it of tc.items) {
+    const ocrItems = (S.ocr[lineKey(p)] || []).map(l => ({ str: l.str, width: l.w, transform: [l.size, 0, 0, l.size, l.x, l.y] }));
+    for (const it of [...tc.items, ...ocrItems]) {
       const s = (it.str || '').toLowerCase(); if (!s) continue;
       let k = s.indexOf(q);
       while (k >= 0) {
@@ -902,8 +1057,8 @@ function stepHit(dir) { if (!hits.length) return; hitIdx = (hitIdx + dir + hits.
 
 /* ---------- tools & chrome ---------- */
 const TOOLS = [
-  ['select', 'Select'], ['hl', 'Highlight'], ['ink', 'Draw'], ['text', 'Text'], ['note', 'Comment'],
-  ['sign', 'Sign'], ['image', 'Image'], ['wm', 'Watermark'],
+  ['select', 'Select'], ['hl', 'Highlight'], ['ink', 'Draw'], ['text', 'Text'], ['edit', 'Edit text'], ['note', 'Comment'],
+  ['sign', 'Sign'], ['image', 'Image'], ['wm', 'Watermark'], ['ocr', 'Scan text'],
 ];
 function buildDock() {
   const d = $('#dock'); d.textContent = '';
@@ -917,10 +1072,14 @@ function pickTool(k) {
   if (k === 'sign') return openSignModal();
   if (k === 'image') return $('#fImg').click();
   if (k === 'wm') return openWmModal();
+  if (k === 'ocr') return openOcrModal();
   setTool(k);
+  if (k === 'edit') redrawAll();
 }
 function setTool(k, keepSel) {
+  const wasEdit = S.tool === 'edit';
   S.tool = k; if (k !== 'place') S.pending = null;
+  if (wasEdit && k !== 'edit') pagesEl.querySelectorAll('.edhint').forEach(r => r.remove());
   if (!keepSel && k !== 'select' && S.sel) { const old = S.sel; S.sel = null; redrawPage(old.pageId); }
   $('#app').dataset.tool = k; syncChrome();
 }
@@ -955,9 +1114,12 @@ function syncChrome() {
     if (o.type === 'text') {
       pr.append(...swatches(INK, o.color, c => { S.textColor = c; applySel(x => x.color = c); }));
       pr.append(sizeSelect(o.size, s => { S.fontSize = s; applySel(x => x.size = s); }));
+      const fs = h('select', { class: 'chip', 'aria-label': 'Font' }, h('option', { value: 'sans' }, 'Sans'), h('option', { value: 'serif' }, 'Serif'), h('option', { value: 'mono' }, 'Mono'));
+      fs.value = o.font || 'sans'; fs.addEventListener('change', () => applySel(x => x.font = fs.value));
+      pr.append(fs, h('button', { class: 'chip' + (o.bold ? ' on' : ''), style: 'font-weight:700', 'aria-pressed': String(!!o.bold), onclick: () => applySel(x => x.bold = !x.bold) }, 'B'));
       if (S.editing !== o.id) pr.append(h('button', { class: 'chip', onclick: () => startEdit(S.sel.pageId, o.id) }, 'Edit text'));
     }
-    pr.append(h('button', { class: 'btn danger', html: icon('trash') + '<span>Delete</span>', onclick: deleteSel }));
+    pr.append(h('button', { class: 'btn danger', html: icon('trash') + `<span>${o.cover ? 'Undo this edit' : 'Delete'}</span>`, onclick: deleteSel }));
   } else if (S.tool === 'hl') {
     pr.append(lbl('Highlight'), ...swatches(HL, S.hlColor, c => { S.hlColor = c; syncChrome(); }), h('span', { class: 'hint' }, 'Drag across the text'));
   } else if (S.tool === 'ink') {
@@ -965,6 +1127,8 @@ function syncChrome() {
       ...[1, 2, 4].map(w => h('button', { class: 'chip' + (S.inkWidth === w ? ' on' : ''), onclick: () => { S.inkWidth = w; syncChrome(); } }, ['Fine', 'Medium', 'Thick'][[1, 2, 4].indexOf(w)])));
   } else if (S.tool === 'text') {
     pr.append(lbl('Text'), ...swatches(INK, S.textColor, c => { S.textColor = c; syncChrome(); }), sizeSelect(S.fontSize, s => { S.fontSize = s; syncChrome(); }), h('span', { class: 'hint' }, 'Tap where the text should go'));
+  } else if (S.tool === 'edit') {
+    pr.append(lbl('Edit text'), h('span', { class: 'hint' }, 'Tap a line to change it. Scanned page? Run Scan text first.'));
   } else if (S.tool === 'note') {
     pr.append(h('span', { class: 'hint' }, 'Tap the page to pin a comment. It shows up as a note in Acrobat and Preview too.'));
   } else if (S.tool === 'wmmove') {
@@ -983,7 +1147,8 @@ function syncChrome() {
 }
 let lastQ = '';
 function sizeSelect(cur, on) {
-  const s = h('select', { class: 'chip', 'aria-label': 'Text size' }, ...[8, 10, 12, 14, 18, 24, 32, 48].map(n => h('option', { value: n }, n + ' pt')));
+  const sizes = [...new Set([8, 10, 12, 14, 18, 24, 32, 48, cur])].sort((a, b) => a - b);
+  const s = h('select', { class: 'chip', 'aria-label': 'Text size' }, ...sizes.map(n => h('option', { value: n }, n + ' pt')));
   s.value = cur; s.addEventListener('change', () => on(+s.value)); return s;
 }
 function toggleSearch(on) {
@@ -1187,7 +1352,7 @@ async function saveFile(filename, data) {
 const textFits = (font, t) => { try { font.encodeText(t); return true; } catch { return false; } };
 function textToPng(o) {
   const k = 4, lines = o.text.split('\n'), c = document.createElement('canvas'), x = c.getContext('2d');
-  x.font = `${o.size * k}px Helvetica, Arial, sans-serif`;
+  x.font = `${o.bold ? 700 : 400} ${o.size * k}px ${CSSFONT[o.font || 'sans']}`;
   const w = Math.max(...lines.map(l => x.measureText(l).width)) + 2, hh = lines.length * o.size * 1.2 * k;
   c.width = Math.ceil(w); c.height = Math.ceil(hh);
   const y = c.getContext('2d'); y.font = x.font; y.fillStyle = o.color; y.textBaseline = 'alphabetic';
@@ -1225,6 +1390,12 @@ async function prepSource(si) {
 async function buildVector(pages, withWm) {
   const out = await PDFDocument.create();
   const font = await out.embedFont(StandardFonts.Helvetica), bold = await out.embedFont(StandardFonts.HelveticaBold);
+  const fontCache = new Map();
+  out._folioFont = async (fam, b) => {
+    const name = { sans: b ? 'HelveticaBold' : 'Helvetica', serif: b ? 'TimesRomanBold' : 'TimesRoman', mono: b ? 'CourierBold' : 'Courier' }[fam || 'sans'];
+    if (!fontCache.has(name)) fontCache.set(name, name === 'Helvetica' ? font : name === 'HelveticaBold' ? bold : await out.embedFont(StandardFonts[name]));
+    return fontCache.get(name);
+  };
   const bySrc = new Map();
   pages.forEach(p => { if (!bySrc.has(p.src)) bySrc.set(p.src, []); bySrc.get(p.src).push(p.idx); });
   const copied = new Map();
@@ -1238,6 +1409,9 @@ async function buildVector(pages, withWm) {
     const cp = copied.get(p.src + ':' + p.idx);
     out.addPage(cp);
     cp.setRotation(degrees(totalRot(p)));
+    for (const l of S.ocr[lineKey(p)] || []) {
+      try { const sz = Math.max(1, Math.min(l.size * 1.6, l.w / Math.max(1, font.widthOfTextAtSize(l.str, 1)))); cp.drawText(l.str, { x: l.x, y: l.y, size: sz, font, opacity: 0 }); } catch {}
+    }
     for (const o of S.annots[p.id] || []) await drawAnnot(out, cp, font, o, imgCache);
     if (withWm && S.wm) drawWmPdf(cp, bold, p);
   }
@@ -1251,6 +1425,10 @@ async function drawAnnot(out, cp, font, o, imgCache) {
     cp.drawSvgPath(path, { x: 0, y: 0, borderColor: hexRgb(o.color), borderWidth: o.width, borderLineCap: LineCapStyle.Round });
   } else if (o.type === 'text' || o.type === 'img') {
     const th = Math.atan2(o.u[1], o.u[0]) * 180 / Math.PI;
+    if (o.type === 'text') {
+      if (o.cover) cp.drawRectangle({ x: o.cover[0], y: o.cover[1], width: o.cover[2], height: o.cover[3], color: hexRgb(o.coverColor || '#ffffff') });
+      font = await out._folioFont(o.font, o.bold);
+    }
     if (o.type === 'text' && textFits(font, o.text)) {
       o.text.split('\n').forEach((line, i) => {
         const off = (i * 1.2 + 0.947) * o.size;
