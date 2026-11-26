@@ -241,10 +241,13 @@ img{max-width:100%}
       <button class="btn icon" id="bZin" aria-label="Zoom in"></button>
     </div>
     <div style="position:relative">
+      <button class="btn ghost" id="bShare" hidden><span class="hide-m">Share</span></button>
       <button class="btn primary" id="bSave"><span>Save</span></button>
       <div class="menu" id="saveMenu" hidden>
         <button id="mPdf">Save as PDF<small>All pages with your changes</small></button>
         <button id="mJpg">Save this page as JPG<small>Handy for sending an IC copy</small></button>
+        <button id="mSharePdf" hidden>Share as PDF<small>Send to WhatsApp, email and more</small></button>
+        <button id="mShareJpg" hidden>Share this page as JPG<small>Send as a picture</small></button>
         <button id="mAdd" class="only-m">Add files<small>Merge more PDFs or photos</small></button>
         <div class="ver" id="ver"></div>
       </div>
@@ -265,7 +268,7 @@ img{max-width:100%}
 <input type="file" id="fAdd" accept="application/pdf,.pdf,image/*" multiple hidden>
 <input type="file" id="fImg" accept="image/*" hidden>
 
-<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-160931";</script>
+<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-128a2e";</script>
 <script src="vendor/pdf.min.js"></script>
 <script src="vendor/pdf-lib.min.js"></script>
 <script src="vendor/jszip.min.js"></script>
@@ -309,6 +312,7 @@ const IC = {
   find: 'M11 4a7 7 0 1 1 0 14a7 7 0 0 1 0-14z M16 16l5 5',
   minus: 'M5 12h14', plus: 'M12 5v14 M5 12h14',
   save: 'M12 4v11 M7 10l5 5 5-5 M5 20h14',
+  share: 'M12 15V3 M7 8l5-5 5 5 M5 12v8h14v-8',
   rot: 'M20 11a8 8 0 1 1-2.3-5.7 M20 4v5h-5',
   trash: 'M4 7h16 M9 7V4h6v3 M6 7l1 13h10l1-13',
   up: 'M12 19V5 M6 11l6-6 6 6', down: 'M12 5v14 M6 13l6 6 6-6',
@@ -1639,6 +1643,34 @@ const saveJpg = () => run('Making the image…', async () => {
   const blob = await rasterize(await buildVector([p], false), 3, true);
   busy(false); await saveFile(`${S.name}${suffix()}-p${S.cur + 1}.jpg`, blob);
 });
+/* ---------- share straight to other apps (Web Share) ---------- */
+const canShareFiles = (() => { try { return !!(window.FOLIO_SITE && navigator.canShare && navigator.canShare({ files: [new File([new Uint8Array(1)], 'x.pdf', { type: 'application/pdf' })] })); } catch { return false; } })();
+async function shareFile(file) {
+  const go = async () => {
+    try { await navigator.share({ files: [file], title: file.name }); }
+    catch (e) {
+      if (e?.name === 'AbortError') return;
+      if (e?.name === 'NotAllowedError') return offerShare(file);
+      toast('This device couldn\u2019t share the file. Use Save instead.');
+    }
+  };
+  await go();
+}
+// building can take longer than the browser allows after a tap, so ask for one more tap
+function offerShare(file) {
+  document.getElementById('sharebar')?.remove();
+  const bar = h('div', { class: 'toast', id: 'sharebar', style: 'display:flex;gap:12px;align-items:center' }, `${file.name} is ready.`,
+    h('button', { class: 'btn primary', style: 'height:32px', onclick: () => { bar.remove(); navigator.share({ files: [file], title: file.name }).catch(e => { if (e?.name !== 'AbortError') toast('This device couldn\u2019t share the file. Use Save instead.'); }); } }, 'Share'),
+    h('button', { class: 'btn', style: 'height:32px;color:inherit', 'aria-label': 'Cancel', onclick: () => bar.remove() }, '✕'));
+  document.body.append(bar);
+}
+const sharePdf = () => run('Building your PDF…', async () => { const b = await exportPdf(S.pages); busy(false); await shareFile(new File([b], S.name + suffix() + '.pdf', { type: 'application/pdf' })); });
+const shareJpg = () => run('Making the image…', async () => {
+  const p = S.pages[S.cur] || S.pages[0];
+  const blob = await rasterize(await buildVector([p], false), 3, true);
+  busy(false); await shareFile(new File([blob], `${S.name}${suffix()}-p${S.cur + 1}.jpg`, { type: 'image/jpeg' }));
+});
+
 const exportSelected = () => run('Building your PDF…', async () => {
   const sel = S.pages.filter(p => S.pageSel.has(p.id)); if (!sel.length) return;
   const b = await exportPdf(sel); busy(false);
@@ -1739,6 +1771,13 @@ $('#bFit').onclick = () => { S.fit = true; rebuild(); };
 $('#bSave').onclick = e => { e.stopPropagation(); $('#saveMenu').hidden = !$('#saveMenu').hidden; };
 $('#mPdf').onclick = () => { $('#saveMenu').hidden = true; savePdf(); };
 $('#mJpg').onclick = () => { $('#saveMenu').hidden = true; saveJpg(); };
+if (canShareFiles) {
+  $('#bShare').hidden = $('#mSharePdf').hidden = $('#mShareJpg').hidden = false;
+  $('#bShare').insertAdjacentHTML('afterbegin', icon('share')); $('#bShare').setAttribute('aria-label', 'Share as PDF');
+  $('#bShare').onclick = sharePdf;
+  $('#mSharePdf').onclick = () => { $('#saveMenu').hidden = true; sharePdf(); };
+  $('#mShareJpg').onclick = () => { $('#saveMenu').hidden = true; shareJpg(); };
+}
 document.addEventListener('pointerdown', e => { if (!e.target.closest('#saveMenu') && !e.target.closest('#bSave')) $('#saveMenu').hidden = true; });
 document.addEventListener('keydown', e => {
   if (document.querySelector('.scrim')) return;
