@@ -147,6 +147,15 @@ select.fld{color-scheme:light}
 .empty .card{max-width:420px;text-align:center;display:flex;flex-direction:column;gap:12px;align-items:center}
 .empty h2{margin:0;font-size:20px;font-weight:600;text-wrap:balance}
 .empty p{margin:0;color:var(--muted)}
+#printArea{display:none}
+@media print{
+  @page{margin:0}
+  html,body{height:auto!important;overflow:visible!important;background:#fff!important}
+  body>*:not(#printArea){display:none!important}
+  #printArea{display:block}
+  #printArea img{display:block;width:100vw;height:100vh;object-fit:contain;break-after:page;page-break-after:always}
+  #printArea img:last-child{break-after:auto;page-break-after:auto}
+}
 .start-recent{width:min(420px,100%);display:flex;flex-direction:column;gap:6px;text-align:left}
 .start-recent:empty{display:none}
 .dropping .viewer::after{content:"Drop to add";position:absolute;inset:12px;border:2px dashed var(--accent);border-radius:12px;display:grid;place-items:center;font-weight:600;color:var(--accent);background:color-mix(in srgb,var(--desk) 80%,transparent);pointer-events:none}
@@ -264,6 +273,7 @@ img{max-width:100%}
       <div class="menu" id="saveMenu" hidden>
         <button id="mPdf">Save as PDF<small>All pages with your changes</small></button>
         <button id="mJpg">Save this page as JPG<small>Handy for sending an IC copy</small></button>
+        <button id="mPrint">Print<small>Just the pages, with your changes</small></button>
         <button id="mSharePdf" hidden>Share as PDF<small>Send to WhatsApp, email and more</small></button>
         <button id="mShareJpg" hidden>Share this page as JPG<small>Send as a picture</small></button>
         <button id="mAdd" class="only-m">Add files<small>Merge more PDFs or photos</small></button>
@@ -286,7 +296,7 @@ img{max-width:100%}
 <input type="file" id="fAdd" accept="application/pdf,.pdf,image/*" multiple hidden>
 <input type="file" id="fImg" accept="image/*" hidden>
 
-<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.26-1c2bce";</script>
+<script>window.FOLIO_SITE = true; window.FOLIO_VERSION = "2026.11.27-d65052";</script>
 <script src="vendor/pdf.min.js"></script>
 <script src="vendor/pdf-lib.min.js"></script>
 <script src="vendor/jszip.min.js"></script>
@@ -2017,6 +2027,42 @@ async function run(label, fn) {
   try { await fn(); } catch (e) { console.error(e); toast(e?.message?.length < 200 ? e.message : 'Something went wrong while saving.'); } finally { busy(false); }
 }
 const savePdf = () => run('Building your PDF…', async () => { const b = await exportPdf(S.pages); busy(false); await saveFile(S.name + suffix() + '.pdf', new Blob([b], { type: 'application/pdf' })); });
+/* ---------- print: only the pages, with every change baked in ---------- */
+let printReady = false;
+function printArea() { let a = document.getElementById('printArea'); if (!a) { a = h('div', { id: 'printArea' }); document.body.append(a); } return a; }
+function clearPrint() { const a = document.getElementById('printArea'); if (a) { a.querySelectorAll('img').forEach(i => i.src.startsWith('blob:') && URL.revokeObjectURL(i.src)); a.textContent = ''; } printReady = false; }
+const printDoc = () => run('Getting pages ready to print…', async () => {
+  if (!S.pages.length) return toast('Open a file first.');
+  const bytes = await exportPdf(S.pages);
+  const doc = await pdfjsLib.getDocument({ data: bytes }).promise, area = printArea(); clearPrint();
+  try {
+    for (let i = 1; i <= doc.numPages; i++) {
+      busy(true, `Getting page ${i} of ${doc.numPages} ready…`);
+      const pg = await doc.getPage(i), v = pg.getViewport({ scale: 2.5 });
+      const c = document.createElement('canvas'); c.width = Math.round(v.width); c.height = Math.round(v.height);
+      const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+      await pg.render({ canvasContext: ctx, viewport: v, annotationMode: pdfjsLib.AnnotationMode.ENABLE }).promise;
+      const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.92)); c.width = c.height = 0;
+      const img = h('img', { src: URL.createObjectURL(blob), alt: '' }); area.append(img); await img.decode().catch(() => {});
+    }
+  } finally { doc.destroy(); }
+  busy(false); printReady = true;
+  await new Promise(r => setTimeout(r, 50));
+  window.print();
+});
+// printing from the browser's own menu: use what's on screen, without the app around it
+addEventListener('beforeprint', () => {
+  if (printReady) return;
+  const area = printArea(); area.textContent = '';
+  pagesEl.querySelectorAll('.pv').forEach(pv => {
+    const pc = pv.querySelector('.pc'); if (!pc || !pc.width) return;
+    const c = document.createElement('canvas'); c.width = pc.width; c.height = pc.height;
+    const ctx = c.getContext('2d'); ctx.drawImage(pc, 0, 0);
+    const wm = pv.querySelector('.wmc'); if (wm && wm.width) ctx.drawImage(wm, 0, 0, c.width, c.height);
+    area.append(h('img', { src: c.toDataURL('image/jpeg', 0.9), alt: '' }));
+  });
+});
+addEventListener('afterprint', () => { const ours = printReady; clearPrint(); if (!ours && S.pages.length) toast('Tip: Save \u25B8 Print includes all your changes and every page.'); });
 const saveJpg = () => run('Making the image…', async () => {
   const p = S.pages[S.cur] || S.pages[0];
   const blob = await rasterize(await buildVector([p], false), 3, true);
@@ -2150,6 +2196,7 @@ $('#bFit').onclick = () => { S.fit = true; rebuild(); };
 $('#bSave').onclick = e => { e.stopPropagation(); $('#saveMenu').hidden = !$('#saveMenu').hidden; };
 $('#mPdf').onclick = () => { $('#saveMenu').hidden = true; savePdf(); };
 $('#mJpg').onclick = () => { $('#saveMenu').hidden = true; saveJpg(); };
+$('#mPrint').onclick = () => { $('#saveMenu').hidden = true; printDoc(); };
 if (canShareFiles) {
   $('#bShare').hidden = $('#mSharePdf').hidden = $('#mShareJpg').hidden = false;
   $('#bShare').insertAdjacentHTML('afterbegin', icon('share')); $('#bShare').setAttribute('aria-label', 'Share as PDF');
@@ -2166,6 +2213,7 @@ document.addEventListener('keydown', e => {
   if (mod && e.key.toLowerCase() === 'y' && !typing) { e.preventDefault(); redo(); return; }
   if (mod && e.key.toLowerCase() === 'f') { e.preventDefault(); toggleSearch(true); return; }
   if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); savePdf(); return; }
+  if (mod && e.key.toLowerCase() === 'p' && S.pages.length) { e.preventDefault(); printDoc(); return; }
   if (typing) return;
   if ((e.key === 'Delete' || e.key === 'Backspace') && S.sel) { e.preventDefault(); deleteSel(); }
   if (e.key === 'Escape') { if (S.tool !== 'select') setTool('select'); else if (S.sel) { const o = S.sel; S.sel = null; redrawPage(o.pageId); syncChrome(); } }
@@ -2216,7 +2264,7 @@ async function loadSample() {
   } catch (e) { console.error(e); }
   S.fit = true; rebuild();
 }
-if (location.search.includes('debug')) window.__f = { S, exportPdf, blankCache, blankKey, pickTool, finishEdit, findBlankLines };
+if (location.search.includes('debug')) window.__f = { S, exportPdf, printDoc, blankCache, blankKey, pickTool, finishEdit, findBlankLines };
 })();
 </script>
 
